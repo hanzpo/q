@@ -331,3 +331,32 @@ func TestPythonMatching(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestStockRouting(t *testing.T) {
+	for _, q := range []string{"current price aapl", "aapl stock", "tesla stock price", "price of bitcoin", "btc price", "$NVDA", "what is the price of tesla", "nvda price", "stock price of microsoft"} {
+		if got := routeWith(q, nil); got[0] != "stocks" {
+			t.Errorf("%s: got %v", q, got)
+		}
+	}
+	if got := siteByID("stocks").term("stock market"); got != "" {
+		t.Errorf("stock market: got %q", got)
+	}
+	for q, want := range map[string]string{"current price aapl": "aapl", "price of apple stock": "apple", "what's the price of tesla": "tesla", "$NVDA": "$NVDA"} {
+		if got := siteByID("stocks").term(q); got != want {
+			t.Errorf("%s: got %q", q, got)
+		}
+	}
+}
+
+func TestPickSymbol(t *testing.T) {
+	ford := []nasdaqHit{{"FORDX", "Fidelity International Growth", "MUTUALFUNDS"}, {"FORD", "Forward Industries", "STOCKS"}, {"F", "Ford Motor Company Common Stock", "STOCKS"}, {"F.PRB", "Ford Motor Company", "STOCKS"}}
+	if got := pickSymbol(ford, "ford"); got == nil || got.Symbol != "F" {
+		t.Errorf("name: got %v", got)
+	}
+	if got := pickSymbol(ford, "FORD"); got == nil || got.Symbol != "FORD" {
+		t.Errorf("symbol: got %v", got)
+	}
+	if got := pickSymbol(ford, "zzz"); got != nil {
+		t.Errorf("miss: got %v", got)
+	}
+}

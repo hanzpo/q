@@ -49,6 +49,7 @@ var rules = []rule{
 	r(`(?i)\b(hn|hacker ?news)\b`, "hackernews"),
 	r(`(?i)\barxiv\b`, "arxiv"),
 	w(`(?i)^papers? (on|about)\b`, "arxiv"),
+	s(`(?i)\b(stocks?|shares?) (price|quote)s?\b|\bstock$|\bstock\s+\S+$|^(current |latest |live )?price (of |for )?\S|\S price$|\bprice of\b|\bticker\b|^\$[A-Za-z.]{1,6}$`, "stocks"),
 	r(`(?i)\bwikiquote\b|^quotes? (by|from|about)\s`, "quotes"),
 	w(`(?i)\S quotes$`, "quotes"),
 	r(`(?i)^openlibrary\s|^books by\s`, "books"),
