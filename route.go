@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -13,30 +14,51 @@ import (
 
 const learnedWeight = 8
 
+type strength int
+
+const (
+	strong strength = iota
+	soft
+	weak
+)
+
 type rule struct {
 	re   *regexp.Regexp
+	not  *regexp.Regexp
 	site string
+	kind strength
 }
 
-func r(pattern, site string) rule { return rule{regexp.MustCompile(pattern), site} }
+func r(pattern, site string) rule { return rule{re: regexp.MustCompile(pattern), site: site} }
+func s(pattern, site string) rule {
+	return rule{re: regexp.MustCompile(pattern), site: site, kind: soft}
+}
+func w(pattern, site string) rule {
+	return rule{re: regexp.MustCompile(pattern), site: site, kind: weak}
+}
 
 var rules = []rule{
-	r(`(?i)\b(my notes|my vault|notes (on|about))\b`, "notes"),
+	r(`(?i)\b(my notes|my vault)\b`, "notes"),
+	w(`(?i)\bnotes (on|about)\b`, "notes"),
 	r(`(?i)\betymology\b|^origin of the word\b`, "etymology"),
 	r(`(?i)^[\d.,]*\s*(usd|cad|eur|gbp|jpy|cny|aud|chf|inr|krw|hkd|sgd|nzd|mxn|brl|sek|nok|dkk|php|thb)\s+(in|to)\s+(usd|cad|eur|gbp|jpy|cny|aud|chf|inr|krw|hkd|sgd|nzd|mxn|brl|sek|nok|dkk|php|thb)$`, "currency"),
 	r(`^\d+(\s*,\s*\d+){2,}$|(?i)\boeis\b`, "oeis"),
 	r(`(?i)^rfc[\s-]*\d+$`, "rfc"),
 	r(`(?i)\b(can ?i ?use|browser support)\b`, "caniuse"),
-	r(`(?i)\b(urban ?dictionary|slang)\b`, "urban"),
+	r(`(?i)^(urban ?dictionary|slang)\s`, "urban"),
 	r(`(?i)\b(hn|hacker ?news)\b`, "hackernews"),
-	r(`(?i)\barxiv\b|\bpapers? (on|about)\b`, "arxiv"),
-	r(`(?i)\bquotes?\b|\bwikiquote\b`, "quotes"),
-	r(`(?i)^(books?|openlibrary)\s|\sbook$`, "books"),
+	r(`(?i)\barxiv\b`, "arxiv"),
+	w(`(?i)^papers? (on|about)\b`, "arxiv"),
+	r(`(?i)\bwikiquote\b|^quotes? (by|from|about)\s`, "quotes"),
+	w(`(?i)\S quotes$`, "quotes"),
+	r(`(?i)^openlibrary\s|^books by\s`, "books"),
+	w(`(?i)^book\s|\sbook$`, "books"),
 	r(`(?i)^(tldr)\s|\s(examples?|cheatsheet)$|^examples? (of|for)\s`, "tldr"),
-	r(`(?i)^(github|gh|repo)\s+\S+/\S+$|^https?://github\.com/`, "github"),
+	r(`(?i)^(github|gh|repo)\s+\S+/\S+$|^https?://(www\.)?github\.com/`, "github"),
+	r(`^@[\w-]+/[\w.-]+$`, "npm"),
 	r(`^[\w-]+\.[a-z]+/\S+`, "go"),
 	r(`(?i)^git[ -][a-z-]+( docs?)?$`, "git"),
-	r(`(?i)^(brew|homebrew)\s`, "brew"),
+	s(`(?i)^(brew|homebrew)\s`, "brew"),
 	r(`(?i)\bdocker (hub|image)\b`, "docker"),
 	r(`(?i)\barch ?(linux|wiki)\b`, "archwiki"),
 	r(`(?i)\b(postgres|postgresql|psql)\b`, "postgres"),
@@ -44,18 +66,23 @@ var rules = []rule{
 	r(`(?i)\blua\b`, "lua"),
 	r(`(?i)\bdocs\.rs\b`, "docsrs"),
 	r(`(?i)\b(cloudflare|wrangler|durable objects?)\b`, "cloudflare"),
-	r(`(?i)\b(claude|anthropic)\b`, "claude"),
-	r(`(?i)\bstripe\b`, "stripe"),
+	s(`(?i)\b(claude|anthropic)\b`, "claude"),
+	s(`(?i)\bstripe\b`, "stripe"),
 	r(`(?i)\bsupabase\b`, "supabase"),
-	r(`(?i)\bbun\b`, "bun"),
-	r(`(?i)\bexpo\b`, "expo"),
+	s(`(?i)\bbun\b`, "bun"),
+	s(`(?i)\bexpo\b`, "expo"),
 	r(`(?i)\bnext\.?js\b`, "nextjs"),
-	r(`(?i)\bnode(\.?js)?\b|^(fs|child_process|worker_threads|readline)\.\w+`, "node"),
-	r(`(?i)\breact\b|^use[A-Z]\w+$`, "react"),
+	r(`^(fs|child_process|worker_threads|readline)\.\w+`, "node"),
+	s(`(?i)\bnode(\.?js)?\b`, "node"),
+	r(`^use[A-Z]\w+$`, "react"),
+	s(`(?i)\breact\b`, "react"),
 	r(`(?i)\b(synonyms?|antonyms?|thesaurus|another word|other words?|opposite of|words? like|ways to say)\b`, "thesaurus"),
-	r(`(?i)^(define|definition of|meaning of)\b|\bwhat does \S+ mean\b|\bmeaning$`, "dictionary"),
-	r(`(?i)^(man|manual for)\s|\bman ?page\b`, "man"),
-	r(`(?i)\b(weather|forecast|temperature in|will it rain)\b`, "weather"),
+	r(`(?i)^(define|definition of|dictionary)\s|\bwhat does \S+ mean\b|\bmeaning$`, "dictionary"),
+	w(`(?i)^meaning of\b`, "dictionary"),
+	r(`(?i)^manual for\s|\bman ?page\b`, "man"),
+	w(`(?i)^man\s`, "man"),
+	r(`(?i)\b(weather|forecast|will it rain)\b`, "weather"),
+	{re: regexp.MustCompile(`(?i)\btemperature in\b`), not: regexp.MustCompile(`(?i)\b(kelvin|celsius|fahrenheit)\b`), site: "weather"},
 	r(`\bstd::(collections|fs|io|sync|vec|env|net|rc|cell)\b`, "rust"),
 	r(`(?i)\bcppreference\b|(^|\s)(c\+\+\d*|cpp)(\s|$)|\bstd::\w+`, "cppreference"),
 	r(`^\w+::\w+`, "rust"),
@@ -63,10 +90,11 @@ var rules = []rule{
 	r(`^(Array|Object|Promise|String|Number|Math|JSON|Map|Set|Date|Intl|Reflect)\.\w+`, "mdn"),
 	r(`(?i)\b(pypi|pip install)\b`, "pypi"),
 	r(`(?i)\b(npm|npx)\b`, "npm"),
-	r(`(?i)\b(crates?(\.io)?|cargo add)\b`, "crates"),
+	r(`(?i)\bcrates\.io\b|\bcargo add\b|\brust crate\b|^crates?\s`, "crates"),
 	r(`(?i)\bstack ?overflow\b|^(how (do|can|to|should)|why (is|does|do|am|won't|can't))\b`, "stackoverflow"),
 	r(`(?i)\bwikipedia\b|^(who|when|where|what (is|was|are))\b`, "wikipedia"),
-	r(`(?i)\bgolang\b|\bpkg\.go\.dev\b|^go\s+\S`, "go"),
+	r(`(?i)\bgolang\b|\bpkg\.go\.dev\b`, "go"),
+	w(`(?i)^go\s+\S`, "go"),
 	r(`\b[Ss]wiftUI\b|\bswiftui\b|\bapple docs\b|^(UI|NS|HK|SK|URL)[A-Z]?\w+$`, "apple"),
 }
 
@@ -208,15 +236,24 @@ func promote(first string, labels []string) []string {
 	return out
 }
 
+var cppMember = regexp.MustCompile(`^(\w+)(<.*>)?::\w+`)
+
 func symbolSite(query string) string {
 	if strings.ContainsAny(query, " \t") {
 		return ""
 	}
-	if strings.Count(query, "/") == 1 {
-		if idx, err := goStd(); err == nil && idx[query] != "" {
+	if m := cppMember.FindStringSubmatch(query); m != nil {
+		if idx, err := cppIndex(""); err == nil && idx[m[1]] != "" {
+			return "cppreference"
+		}
+		return ""
+	}
+	if strings.Count(query, "/") >= 1 {
+		path, _, _ := strings.Cut(query, ".")
+		if idx, err := goStd(); err == nil && idx[path] != "" {
 			return "go"
 		}
-		return "github"
+		return ""
 	}
 	if strings.Contains(query, ".") {
 		if idx, err := pyIndex(); err == nil && idx[query] != "" {
@@ -230,57 +267,103 @@ func symbolSite(query string) string {
 		}
 	}
 	if strings.Contains(query, "_") {
-		if idx, err := cppIndex(); err == nil && idx[query] != "" {
+		if idx, err := cppIndex(""); err == nil && idx[query] != "" {
 			return "cppreference"
 		}
 	}
 	return ""
 }
 
-func route(query string) []string { return routeWith(query, learned()) }
+var (
+	goWord  = regexp.MustCompile(`(?i)^go\s+([\w/]+)`)
+	manWord = regexp.MustCompile(`(?i)^man\s+(?:\d\s+)?(\S+)$`)
+)
+
+func confirmed(site, query string) bool {
+	switch site {
+	case "go":
+		if m := goWord.FindStringSubmatch(query); m != nil {
+			idx, err := goStd()
+			return err == nil && idx[strings.ToLower(m[1])] != ""
+		}
+	case "man":
+		if m := manWord.FindStringSubmatch(query); m != nil {
+			return exec.Command("man", "-w", m[1]).Run() == nil
+		}
+	}
+	return false
+}
 
 func routeWith(query string, extra []example) []string {
-	first := ""
-	for _, e := range extra {
-		if strings.EqualFold(e.Query, query) {
-			first = e.Site
+	for i := len(extra) - 1; i >= 0; i-- {
+		if strings.EqualFold(extra[i].Query, query) {
+			return []string{extra[i].Site}
 		}
 	}
-	if first == "" {
-		for _, ru := range rules {
-			if ru.re.MatchString(query) {
-				first = ru.site
-				break
+	code := codeShape.MatchString(query) && !strings.HasPrefix(query, ".")
+	if sym := symbolSite(query); sym != "" {
+		return []string{sym}
+	}
+	var hits []rule
+	for _, ru := range rules {
+		if ru.re.MatchString(query) && (ru.not == nil || !ru.not.MatchString(query)) {
+			hits = append(hits, ru)
+		}
+	}
+	if len(hits) > 0 {
+		head := hits[0]
+		var order []string
+		if head.kind == weak && !confirmed(head.site, query) || head.site == "wikipedia" {
+			order = append(order, "wikititle")
+		}
+		for _, h := range hits {
+			order = append(order, h.site)
+		}
+		if head.kind == soft {
+			order = append(order, "wikititle")
+		}
+		order = unique(order)
+		for _, h := range hits {
+			if h.site == "stackoverflow" && !code {
+				order = unique(append(order, "wikipedia"))
 			}
 		}
+		if !siteByID(head.site).Explicit && !namedTools[head.site] && head.kind == strong && !code && head.site != "wikipedia" {
+			order = append(order, "wikipedia")
+		}
+		return order
 	}
-	if first == "" {
-		first = symbolSite(query)
+	if strings.Count(query, "/") == 1 && !strings.Contains(query, " ") {
+		return []string{"wikititle", "github", "wikipedia"}
 	}
-	if first != "" && (siteByID(first).Explicit || namedTools[first]) {
-		return []string{first}
+	if !code && !strings.Contains(query, " ") {
+		if idx, err := pyIndex(); err == nil && idx[query] != "" {
+			return []string{"wikititle", "python", "wikipedia"}
+		}
 	}
 	corrected := map[string]bool{}
 	for _, e := range extra {
 		corrected[e.Site] = true
 	}
-	var order []string
+	var ranked []string
 	for _, l := range classify(query, extra) {
 		if !siteByID(l).Explicit || corrected[l] {
-			order = append(order, l)
+			ranked = append(ranked, l)
 		}
 	}
-	if first != "" {
-		order = promote(first, order)
-	}
-	picked := order[:1]
-	for _, l := range order[1:] {
-		if first == "" && len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit && !siteByID(l).Fuzzy {
+	picked := ranked[:1]
+	for _, l := range ranked[1:] {
+		if len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit && !siteByID(l).Fuzzy {
 			picked = append(picked, l)
 		}
 	}
-	if picked[0] != "wikipedia" && !codeShape.MatchString(query) {
+	if code {
+		return picked
+	}
+	if picked[0] != "wikipedia" {
 		picked = append(picked, "wikipedia")
 	}
-	return picked
+	return append([]string{"wikititle"}, picked...)
 }
+
+func route(query string) []string { return routeWith(query, learned()) }

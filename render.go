@@ -28,6 +28,8 @@ func sgr(open, end string) func(string) string {
 	}
 }
 
+var displayMath = regexp.MustCompile(`(?s)^\{\\displaystyle\s*(.*)\}$`)
+
 var (
 	bold    = sgr("1", "22")
 	dim     = sgr("2", "22")
@@ -38,6 +40,31 @@ var (
 	ansi    = regexp.MustCompile("\x1b\\[[0-9;]*m|\x1b\\]8;;[^\x07]*\x07")
 	pieces  = regexp.MustCompile(`\n|[ \t\r\f\v]+|[^ \t\r\f\v\n]+`)
 )
+
+var allowedEscape = regexp.MustCompile("\x1b\\[[0-9;]*m|\x1b\\]8;;[^\x07\x1b]*\x07")
+
+func stripControl(s string) string {
+	return strings.Map(func(c rune) rune {
+		if c == '\n' || c == '\t' || (c >= 0x20 && c != 0x7f && !(c >= 0x80 && c <= 0x9f)) {
+			return c
+		}
+		return -1
+	}, s)
+}
+
+func sanitize(s string) string {
+	var b strings.Builder
+	at := 0
+	for _, m := range allowedEscape.FindAllStringIndex(s, -1) {
+		b.WriteString(stripControl(s[at:m[0]]))
+		if color {
+			b.WriteString(s[m[0]:m[1]])
+		}
+		at = m[1]
+	}
+	b.WriteString(stripControl(s[at:]))
+	return b.String()
+}
 
 func hyperlink(t, href string) string {
 	if !color {
@@ -83,7 +110,7 @@ func set(items ...string) map[string]bool {
 }
 
 var (
-	skipTags  = set("script", "style", "noscript", "svg", "button", "form", "input", "iframe", "template", "link", "meta", "nav", "head")
+	skipTags  = set("script", "style", "noscript", "svg", "button", "form", "input", "iframe", "template", "link", "meta", "nav", "head", "math")
 	blockTags = set("address", "article", "aside", "blockquote", "body", "caption", "center", "dd", "details", "div", "dl", "dt",
 		"figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "main", "ol", "p", "pre",
 		"section", "summary", "table", "textarea", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
@@ -126,6 +153,18 @@ func attr(n *html.Node, key string) string {
 	return ""
 }
 
+func (r *renderer) href(n *html.Node) string {
+	href := attr(n, "href")
+	if n.Data != "a" || href == "" || strings.HasPrefix(href, "#") || r.base == nil {
+		return ""
+	}
+	u, err := r.base.Parse(href)
+	if err != nil {
+		return ""
+	}
+	return u.String()
+}
+
 func (r *renderer) inline(n *html.Node, s style, out *[]seg) {
 	if n.Type == html.TextNode {
 		*out = append(*out, seg{strings.ReplaceAll(n.Data, "\n", " "), s})
@@ -139,7 +178,12 @@ func (r *renderer) inline(n *html.Node, s style, out *[]seg) {
 		*out = append(*out, seg{"\n", s})
 		return
 	case "img":
-		if alt := attr(n, "alt"); alt != "" {
+		alt := attr(n, "alt")
+		if m := displayMath.FindStringSubmatch(alt); m != nil {
+			c := s
+			c.code = true
+			*out = append(*out, seg{strings.TrimSpace(m[1]), c})
+		} else if alt != "" {
 			i := s
 			i.i = true
 			*out = append(*out, seg{"[" + alt + "]", i})
@@ -152,14 +196,14 @@ func (r *renderer) inline(n *html.Node, s style, out *[]seg) {
 	case "code", "tt", "kbd", "samp":
 		s.code = true
 	case "sup":
+		var b strings.Builder
+		nodeText(n, &b)
+		if strings.HasPrefix(strings.TrimSpace(b.String()), "[") {
+			return
+		}
 		*out = append(*out, seg{"^", s})
 	case "a":
-		href := attr(n, "href")
-		if href != "" && !strings.HasPrefix(href, "#") && r.base != nil {
-			if u, err := r.base.Parse(href); err == nil {
-				s.href = u.String()
-			}
-		}
+		s.href = r.href(n)
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		r.inline(c, s, out)
@@ -185,6 +229,24 @@ func wrap(segs []seg, width int) []string {
 		w := 0
 		for _, p := range word {
 			w += runewidth.StringWidth(p.t)
+		}
+		if w > width {
+			if used > 0 {
+				flush()
+			}
+			for _, p := range word {
+				for _, r := range p.t {
+					rw := runewidth.RuneWidth(r)
+					if used+rw > width {
+						flush()
+					}
+					line.WriteString(paint(string(r), p.s))
+					used += rw
+				}
+			}
+			word = nil
+			gap = false
+			return
 		}
 		if used > 0 && used+1+w > width {
 			flush()
@@ -266,6 +328,42 @@ func rows(table *html.Node) []*html.Node {
 	return out
 }
 
+func span(c *html.Node, key string) int {
+	v, err := strconv.Atoi(attr(c, key))
+	if err != nil || v < 1 {
+		return 1
+	}
+	return v
+}
+
+func expandRows(trs []*html.Node) [][]*html.Node {
+	grid := make([][]*html.Node, len(trs))
+	carry := map[int]int{}
+	for i, tr := range trs {
+		col := 0
+		var row []*html.Node
+		for _, c := range children(tr, "td", "th") {
+			for carry[col] > 0 {
+				carry[col]--
+				row = append(row, nil)
+				col++
+			}
+			row = append(row, c)
+			if n := span(c, "rowspan"); n > 1 {
+				carry[col] = n - 1
+			}
+			col++
+		}
+		for carry[col] > 0 {
+			carry[col]--
+			row = append(row, nil)
+			col++
+		}
+		grid[i] = row
+	}
+	return grid
+}
+
 func contains(n *html.Node, tag string) bool {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type == html.ElementNode && (c.Data == tag || contains(c, tag)) {
@@ -276,16 +374,20 @@ func contains(n *html.Node, tag string) bool {
 }
 
 func (r *renderer) table(n *html.Node, width int) []string {
-	trs := rows(n)
-	grid := make([][]*html.Node, len(trs))
-	cols := 0
-	for i, tr := range trs {
-		grid[i] = children(tr, "td", "th")
-		cols = max(cols, len(grid[i]))
-	}
 	var out []string
+	for _, c := range children(n, "caption") {
+		if lines := trimBlank(r.blocks(c, width)); len(lines) > 0 {
+			out = append(append(out, lines...), "")
+		}
+	}
+	trs := rows(n)
+	grid := expandRows(trs)
+	cols := 0
+	for _, row := range grid {
+		cols = max(cols, len(row))
+	}
 	if cols == 0 {
-		return nil
+		return out
 	}
 	if cols == 1 || contains(n, "table") {
 		for _, tr := range trs {
@@ -293,17 +395,26 @@ func (r *renderer) table(n *html.Node, width int) []string {
 		}
 		return out
 	}
-	spans := func(c *html.Node) bool {
-		v, _ := strconv.Atoi(attr(c, "colspan"))
-		return v > 1
+	const gap = 2
+	if cols*8+gap*(cols-1) > width {
+		for _, row := range grid {
+			for _, c := range row {
+				if c != nil {
+					out = append(out, trimBlank(r.blocks(c, width))...)
+				}
+			}
+			out = append(out, "")
+		}
+		return out
 	}
+	spans := func(c *html.Node) bool { return c != nil && span(c, "colspan") > 1 }
 	widths := make([]int, cols)
 	for i := range widths {
 		widths[i] = 1
 	}
 	for _, row := range grid {
 		for i, c := range row {
-			if spans(c) {
+			if c == nil || spans(c) {
 				continue
 			}
 			for _, l := range r.blocks(c, 1000) {
@@ -311,7 +422,6 @@ func (r *renderer) table(n *html.Node, width int) []string {
 			}
 		}
 	}
-	const gap = 2
 	room := width - gap*(cols-1)
 	for {
 		total, wide := 0, 0
@@ -331,18 +441,22 @@ func (r *renderer) table(n *html.Node, width int) []string {
 		header := len(row) > 0
 		for _, c := range row {
 			anySpan = anySpan || spans(c)
-			header = header && c.Data == "th"
+			header = header && c != nil && c.Data == "th"
 		}
 		if len(row) == 1 || anySpan {
 			for _, c := range row {
-				out = append(out, r.blocks(c, width)...)
+				if c != nil {
+					out = append(out, r.blocks(c, width)...)
+				}
 			}
 			continue
 		}
 		cells := make([][]string, len(row))
 		h := 1
 		for i, c := range row {
-			cells[i] = trimBlank(r.blocks(c, widths[i]))
+			if c != nil {
+				cells[i] = trimBlank(r.blocks(c, widths[i]))
+			}
 			h = max(h, len(cells[i]))
 		}
 		for y := 0; y < h; y++ {
@@ -476,6 +590,11 @@ func (r *renderer) blocks(n *html.Node, width int) []string {
 			push(r.table(c, width))
 		default:
 			if inner := trimBlank(r.blocks(c, width)); len(inner) > 0 {
+				if href := r.href(c); href != "" {
+					for i, l := range inner {
+						inner[i] = hyperlink(under(l), href)
+					}
+				}
 				out = append(out, inner...)
 				if c.Data != "td" && c.Data != "th" {
 					out = append(out, "")

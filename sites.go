@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -113,10 +114,19 @@ func thesaurusGet(term string, width int) (*Page, error) {
 }
 
 func dictionaryGet(term string, width int) (*Page, error) {
+	p, err := dictionaryWord(term, width)
+	if p == nil && err == nil && term != strings.ToLower(term) {
+		return dictionaryWord(strings.ToLower(term), width)
+	}
+	return p, err
+}
+
+func dictionaryWord(term string, width int) (*Page, error) {
 	word := url.PathEscape(strings.ReplaceAll(term, " ", "_"))
 	var data struct {
 		En []struct {
 			PartOfSpeech string `json:"partOfSpeech"`
+			Language     string `json:"language"`
 			Definitions  []struct {
 				Definition     string `json:"definition"`
 				ParsedExamples []struct {
@@ -131,7 +141,14 @@ func dictionaryGet(term string, width int) (*Page, error) {
 	}
 	u := "https://en.wiktionary.org/wiki/" + word
 	var out []string
+	english := false
 	for _, e := range data.En {
+		english = english || e.Language == "English"
+	}
+	for _, e := range data.En {
+		if english && e.Language != "English" {
+			continue
+		}
 		out = append(out, bold(e.PartOfSpeech), "")
 		n := 0
 		for _, d := range e.Definitions {
@@ -161,8 +178,9 @@ var cppLink = regexp.MustCompile(`<a href="([^"]+)"[^>]*>\s*<tt>([^<]+)</tt>`)
 
 const cppRoot = "https://en.cppreference.com/w/cpp"
 
-func cppIndex() (map[string]string, error) {
-	b, err := fetch(cppRoot+"/symbol_index", req{ttl: month})
+func cppIndex(page string) (map[string]string, error) {
+	u := cppRoot + "/symbol_index" + page
+	b, err := fetch(u, req{ttl: month})
 	if err != nil {
 		return nil, err
 	}
@@ -174,65 +192,126 @@ func cppIndex() (map[string]string, error) {
 		}
 		name = strings.TrimSpace(name)
 		href := strings.TrimPrefix(strings.TrimPrefix(string(m[1]), "/w"), "/cpp")
-		if _, seen := idx[name]; !seen && strings.HasPrefix(href, "/") {
+		if _, seen := idx[name]; !seen && strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "/symbol_index") {
 			idx[name] = cppRoot + href
 		}
+	}
+	if len(idx) == 0 {
+		forget(u)
 	}
 	return idx, nil
 }
 
+var (
+	templateArgs  = regexp.MustCompile(`<[^<>]*>`)
+	cppNamespaces = set("chrono", "filesystem", "ranges", "views")
+	cppOperators  = map[string]string{"operator[]": "operator_at", "operator==": "operator_cmp", "operator<<": "operator_ltlt", "operator>>": "operator_gtgt"}
+)
+
+func stripTemplates(s string) string {
+	for templateArgs.MatchString(s) {
+		s = templateArgs.ReplaceAllString(s, "")
+	}
+	return s
+}
+
+func unique(items []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, i := range items {
+		if !seen[i] {
+			seen[i] = true
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 func cppGet(term string, width int) (*Page, error) {
-	norm := strings.ReplaceAll(strings.TrimPrefix(term, "std::"), " ", "::")
+	norm := strings.ReplaceAll(strings.TrimPrefix(stripTemplates(term), "std::"), " ", "::")
 	var parts []string
 	for _, p := range strings.Split(norm, "::") {
-		if p = strings.TrimSuffix(p, "()"); p != "" && p != "std" {
+		p = strings.TrimSuffix(p, "()")
+		if op, ok := cppOperators[p]; ok {
+			p = op
+		}
+		if p != "" && p != "std" {
 			parts = append(parts, p)
 		}
 	}
 	if len(parts) == 0 {
 		return nil, nil
 	}
-	idx, err := cppIndex()
+	var known, tries []string
+	if len(parts) > 1 && cppNamespaces[parts[0]] {
+		sub, err := cppIndex("/" + parts[0])
+		if err != nil {
+			return nil, err
+		}
+		if root, ok := sub[parts[1]]; ok {
+			known = append(known, strings.Join(append([]string{root}, parts[2:]...), "/"))
+		}
+	}
+	idx, err := cppIndex("")
 	if err != nil {
 		return nil, err
 	}
-	var tries []string
 	if root, ok := idx[parts[0]]; ok {
-		tries = append(tries, strings.Join(append([]string{root}, parts[1:]...), "/"))
+		known = append(known, strings.Join(append([]string{root}, parts[1:]...), "/"))
+	}
+	for _, u := range known {
+		b, err := fetch(u, req{})
+		if err != nil {
+			return nil, err
+		}
+		if p, err := cppPage(b, u, width); p != nil || err != nil {
+			return p, err
+		}
 	}
 	joined := strings.Join(parts, "_")
 	for _, name := range []string{joined, strings.TrimSuffix(joined, "s"), strings.Join(parts, "-"), parts[0], strings.TrimSuffix(parts[0], "s")} {
 		tries = append(tries, cppRoot+"/language/"+name, cppRoot+"/keyword/"+name)
 	}
-	tries = append(tries, cppRoot+"/"+parts[0])
-	for _, u := range tries {
-		b, err := fetch(u, req{})
-		if err != nil {
-			return nil, err
+	tries = unique(append(tries, cppRoot+"/"+parts[0]))
+	for i, b := range fetchAll(tries, req{}) {
+		if p, err := cppPage(b, tries[i], width); p != nil || err != nil {
+			return p, err
 		}
-		if b == nil {
-			continue
-		}
-		doc, err := parseDoc(b)
-		if err != nil {
-			return nil, err
-		}
-		body := doc.Find("#mw-content-text")
-		if body.Length() == 0 {
-			continue
-		}
-		body.Find(".t-navbar, .toc, #toc, .editsection, .printfooter, .catlinks, .noprint, .t-page-template").Remove()
-		return &Page{text(doc.Find("#firstHeading")), u, renderSel(body, u, width)}, nil
 	}
 	return nil, nil
 }
 
-var pyLine = regexp.MustCompile(`^(\S+)\s+(py:\S+)\s+\S+\s+(\S+)`)
+func cppPage(b []byte, u string, width int) (*Page, error) {
+	if b == nil {
+		return nil, nil
+	}
+	doc, err := parseDoc(b)
+	if err != nil {
+		return nil, err
+	}
+	body := doc.Find("#mw-content-text")
+	if body.Length() == 0 {
+		return nil, nil
+	}
+	body.Find(".t-navbar, .toc, #toc, .editsection, .printfooter, .catlinks, .noprint, .t-page-template").Remove()
+	return &Page{text(doc.Find("#firstHeading")), u, renderSel(body, u, width)}, nil
+}
+
+var (
+	pyLine      = regexp.MustCompile(`^(\S+)\s+(py:\S+)\s+\S+\s+(\S+)`)
+	pyLabelLine = regexp.MustCompile(`^(\S+)\s+std:label\s+\S+\s+(\S+)\s+(.+)$`)
+)
 
 func pyIndex() (map[string]string, error) {
-	raw, err := fetch("https://docs.python.org/3/objects.inv", req{ttl: month})
+	idx, _, err := pyInventory()
+	return idx, err
+}
+
+func pyInventory() (map[string]string, []llmsEntry, error) {
+	const u = "https://docs.python.org/3/objects.inv"
+	raw, err := fetch(u, req{ttl: month})
 	if err != nil || raw == nil {
-		return nil, err
+		return nil, nil, err
 	}
 	at := 0
 	for range 4 {
@@ -240,14 +319,21 @@ func pyIndex() (map[string]string, error) {
 	}
 	z, err := zlib.NewReader(bytes.NewReader(raw[at:]))
 	if err != nil {
-		return nil, err
+		forget(u)
+		return nil, nil, err
 	}
 	inv, err := io.ReadAll(z)
 	if err != nil {
-		return nil, err
+		forget(u)
+		return nil, nil, err
 	}
 	idx := map[string]string{}
+	var labels []llmsEntry
 	for _, line := range strings.Split(string(inv), "\n") {
+		if m := pyLabelLine.FindStringSubmatch(line); m != nil && m[3] != "-" {
+			labels = append(labels, llmsEntry{m[3], strings.TrimSuffix(m[2], "$") + map[bool]string{true: m[1]}[strings.HasSuffix(m[2], "$")], ""})
+			continue
+		}
 		m := pyLine.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -256,28 +342,55 @@ func pyIndex() (map[string]string, error) {
 			idx[m[1]] = strings.TrimSuffix(m[3], "$") + map[bool]string{true: m[1]}[strings.HasSuffix(m[3], "$")]
 		}
 	}
-	return idx, nil
+	return idx, labels, nil
+}
+
+func pyMatch(idx map[string]string, match func(string) bool) string {
+	key := ""
+	for k := range idx {
+		if match(k) && (key == "" || len(k) < len(key) || (len(k) == len(key) && k < key)) {
+			key = k
+		}
+	}
+	return key
+}
+
+func pyLabelMatch(labels []llmsEntry, term string) *llmsEntry {
+	want := strings.ToLower(term)
+	for i := range labels {
+		t := strings.ToLower(labels[i].title)
+		if t == want || t == "the "+want {
+			return &labels[i]
+		}
+	}
+	return llmsBest(labels, term)
 }
 
 func pythonGet(term string, width int) (*Page, error) {
 	name := strings.ReplaceAll(term, " ", ".")
-	idx, err := pyIndex()
+	idx, labels, err := pyInventory()
 	if err != nil {
 		return nil, err
 	}
 	key := name
 	if _, ok := idx[key]; !ok {
-		key = ""
-		for k := range idx {
-			if strings.HasSuffix(k, "."+name) && (key == "" || len(k) < len(key) || (len(k) == len(key) && k < key)) {
-				key = k
-			}
+		key = pyMatch(idx, func(k string) bool { return strings.HasSuffix(k, "."+name) })
+		if key == "" {
+			want := strings.ToLower(name)
+			key = pyMatch(idx, func(k string) bool {
+				lower := strings.ToLower(k)
+				return lower == want || strings.HasSuffix(lower, "."+want)
+			})
 		}
 	}
-	if key == "" {
+	var uri string
+	if key != "" {
+		uri = idx[key]
+	} else if e := pyLabelMatch(labels, term); e != nil {
+		key, uri = e.title, e.url
+	} else {
 		return nil, nil
 	}
-	uri := idx[key]
 	file, id, _ := strings.Cut(uri, "#")
 	u := "https://docs.python.org/3/" + uri
 	b, err := fetch("https://docs.python.org/3/"+file, req{})
@@ -356,7 +469,7 @@ func rustPage(u, title string, width int) (*Page, error) {
 }
 
 func rustDocs(base, term string, width int) (*Page, error) {
-	norm := strings.ReplaceAll(strings.TrimPrefix(term, "std::"), " ", "::")
+	norm := strings.ReplaceAll(strings.TrimPrefix(stripTemplates(term), "std::"), " ", "::")
 	var parts []string
 	for _, p := range strings.Split(norm, "::") {
 		if p != "" {
@@ -374,19 +487,32 @@ func rustDocs(base, term string, width int) (*Page, error) {
 	for _, m := range rustLink.FindAllSubmatch(b, -1) {
 		items = append(items, rustItem{string(m[2]), string(m[1])})
 	}
+	if len(items) == 0 {
+		forget(base + "all.html")
+	}
 	whole := rustFind(items, strings.Join(parts, "::"))
 	owner := whole
 	if owner == nil && len(parts) > 1 {
 		owner = rustFind(items, strings.Join(parts[:len(parts)-1], "::"))
 	}
-	href, title := strings.Join(parts, "/")+"/index.html", strings.Join(parts, "::")
+	title := strings.Join(parts, "::")
+	candidates := []string{"keyword." + title + ".html", "primitive." + title + ".html", strings.Join(parts, "/") + "/index.html"}
 	if owner != nil {
-		href, title = owner.href, owner.path
+		candidates, title = []string{owner.href}, owner.path
 	}
-	u := base + href
-	page, err := fetch(u, req{})
-	if err != nil || page == nil {
-		return nil, err
+	var u string
+	var page []byte
+	for _, href := range candidates {
+		u = base + href
+		if page, err = fetch(u, req{}); err != nil {
+			return nil, err
+		}
+		if page != nil {
+			break
+		}
+	}
+	if page == nil {
+		return nil, nil
 	}
 	doc, err := parseDoc(page)
 	if err != nil {
@@ -668,7 +794,10 @@ func mediawiki(host, term string, width int) (*Page, error) {
 	if err != nil || !ok || len(found.Query.Search) == 0 {
 		return nil, err
 	}
-	title := found.Query.Search[0].Title
+	return wikiPage(host, found.Query.Search[0].Title, width)
+}
+
+func wikiPage(host, title string, width int) (*Page, error) {
 	slug := url.PathEscape(strings.ReplaceAll(title, " ", "_"))
 	b, err := fetch("https://"+host+"/api/rest_v1/page/html/"+slug, req{ua: apiUA})
 	if err != nil || b == nil {
@@ -679,7 +808,7 @@ func mediawiki(host, term string, width int) (*Page, error) {
 		return nil, err
 	}
 	body := doc.Find("body")
-	body.Find(".navbox, .navbox-styles, .mw-editsection, sup.reference, .reflist, .metadata, .sistersitebox, .mw-empty-elt, .hatnote, .thumb, figure, .infobox, .sidebar").Remove()
+	body.Find(".navbox, .navbox-styles, .mw-editsection, sup.reference, sup.mw-ref, .reflist, .metadata, .sistersitebox, .mw-empty-elt, .hatnote, .thumb, figure, .infobox, .sidebar").Remove()
 	body.Find("section").Each(func(_ int, s *goquery.Selection) {
 		if wikiDrop[text(s.Find("h2").First())] {
 			s.Remove()
@@ -687,6 +816,68 @@ func mediawiki(host, term string, width int) (*Page, error) {
 	})
 	u := "https://" + host + "/wiki/" + slug
 	return &Page{title, u, renderSel(body, u, width)}, nil
+}
+
+func titleVariants(q string) []string {
+	q = strings.TrimSpace(strings.Trim(q, "?!,"))
+	words := strings.Fields(q)
+	titled := make([]string, len(words))
+	for i, w := range words {
+		r := []rune(w)
+		r[0] = unicode.ToUpper(r[0])
+		titled[i] = string(r)
+	}
+	out := []string{q, strings.Join(titled, " ")}
+	if len(q) <= 5 {
+		out = append(out, strings.ToUpper(q))
+	}
+	return unique(out)
+}
+
+func wikiTitleGet(query string, width int) (*Page, error) {
+	if query == "" || strings.ContainsAny(query, "|#<>[]{}") || len(strings.Fields(query)) > 6 {
+		return nil, nil
+	}
+	variants := titleVariants(query)
+	var data struct {
+		Query struct {
+			Normalized []struct{ From, To string } `json:"normalized"`
+			Redirects  []struct{ From, To string } `json:"redirects"`
+			Pages      []struct {
+				Title   string `json:"title"`
+				Missing bool   `json:"missing"`
+			} `json:"pages"`
+		} `json:"query"`
+	}
+	u := "https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&redirects=1&titles=" + url.QueryEscape(strings.Join(variants, "|"))
+	ok, err := fetchJSON(u, req{ua: apiUA}, &data)
+	if err != nil || !ok {
+		return nil, err
+	}
+	moved := map[string]string{}
+	for _, n := range data.Query.Normalized {
+		moved[n.From] = n.To
+	}
+	for _, n := range data.Query.Redirects {
+		moved[n.From] = n.To
+	}
+	real := map[string]bool{}
+	for _, p := range data.Query.Pages {
+		real[p.Title] = !p.Missing
+	}
+	for _, v := range variants {
+		for range 4 {
+			next, ok := moved[v]
+			if !ok {
+				break
+			}
+			v = next
+		}
+		if real[v] {
+			return wikiPage("en.wikipedia.org", v, width)
+		}
+	}
+	return nil, nil
 }
 
 func stackoverflowGet(term string, width int) (*Page, error) {
@@ -746,6 +937,11 @@ func goStd() (map[string]string, error) {
 		return nil, err
 	}
 	idx := map[string]string{}
+	defer func() {
+		if len(idx) == 0 {
+			forget(goRoot + "/std")
+		}
+	}()
 	for _, m := range goStdLink.FindAllSubmatch(b, -1) {
 		path := string(m[1])
 		name := path[strings.LastIndexByte(path, '/')+1:]
@@ -769,7 +965,9 @@ func goSearch(q, mode string) (string, error) {
 	return strings.TrimPrefix(string(m[1]), "/"), nil
 }
 
-func goResolve(term string) (pkg, sym string, err error) {
+var goSymbolTail = regexp.MustCompile(`^(.*?)\.([A-Z].*)$`)
+
+func goSplit(term string) (pkg, sym string) {
 	t := term
 	if !strings.Contains(t, "/") {
 		t = strings.ReplaceAll(t, " ", ".")
@@ -779,40 +977,54 @@ func goResolve(term string) (pkg, sym string, err error) {
 		head, tail = t[:i+1], t[i+1:]
 	}
 	if strings.Contains(head, ".") {
-		name, sym, _ := strings.Cut(tail, ".")
-		return head + name, sym, nil
-	}
-	name, sym, _ := strings.Cut(tail, ".")
-	std, err := goStd()
-	if err != nil {
-		return "", "", err
-	}
-	if path, ok := std[strings.ToLower(head+name)]; ok {
-		return path, sym, nil
-	}
-	if name != strings.ToLower(name) {
-		hit, err := goSearch(t, "symbol")
-		if err != nil || hit == "" {
-			return "", "", err
+		if m := goSymbolTail.FindStringSubmatch(tail); m != nil {
+			return head + m[1], m[2]
 		}
-		pkg, sym, _ = strings.Cut(hit, "#")
-		return pkg, sym, nil
+		return head + tail, ""
 	}
-	if sym != "" {
-		return "", "", nil
-	}
-	hit, err := goSearch(name, "package")
-	if err != nil || !strings.Contains(strings.ToLower(hit), strings.ToLower(name)) {
-		return "", "", err
-	}
-	return hit, "", nil
+	name, rest, _ := strings.Cut(tail, ".")
+	return head + name, rest
 }
 
-func goGet(term string, width int) (*Page, error) {
-	pkg, sym, err := goResolve(term)
-	if err != nil || pkg == "" {
+var goSpecAlias = map[string]string{"generics": "type parameter declarations", "goroutine": "go statements", "goroutines": "go statements", "channel": "channel types", "channels": "channel types"}
+
+func goSpec(term string, width int) (*Page, error) {
+	const u = "https://go.dev/ref/spec"
+	b, err := fetch(u, req{ttl: month})
+	if err != nil || b == nil {
 		return nil, err
 	}
+	doc, err := parseDoc(b)
+	if err != nil {
+		return nil, err
+	}
+	want := strings.ToLower(term)
+	if alias, ok := goSpecAlias[want]; ok {
+		want = alias
+	}
+	var head *goquery.Selection
+	doc.Find("h2, h3, h4").EachWithBreak(func(_ int, h *goquery.Selection) bool {
+		t := strings.ToLower(text(h))
+		if t == want || strings.HasPrefix(t, want+" ") || strings.HasPrefix(t, strings.TrimSuffix(want, "s")+" ") {
+			head = h
+			return false
+		}
+		return true
+	})
+	if head == nil {
+		return nil, nil
+	}
+	var html strings.Builder
+	head.NextUntil("h2, h3, h4").Each(func(_ int, s *goquery.Selection) {
+		if h, err := goquery.OuterHtml(s); err == nil {
+			html.WriteString(h)
+		}
+	})
+	id, _ := head.Attr("id")
+	return &Page{text(head), u + "#" + id, renderHTML(html.String(), u, width)}, nil
+}
+
+func goPage(pkg, sym string, width int) (*Page, error) {
 	u := goRoot + "/" + pkg
 	b, err := fetch(u, req{})
 	if err != nil || b == nil {
@@ -841,12 +1053,53 @@ func goGet(term string, width int) (*Page, error) {
 				return &Page{pkg + "." + id, u + "#" + id, renderSel(box, u, width)}, nil
 			}
 		}
+		if pkg == "builtin" {
+			return nil, nil
+		}
 	}
 	body := renderSel(content, u, width)
 	if readme := renderSel(doc.Find(".UnitReadme-content").First(), u, width); readme != "" {
 		body = readme + "\n\n" + body
 	}
 	return &Page{pkg, u, body}, nil
+}
+
+func goGet(term string, width int) (*Page, error) {
+	pkg, sym := goSplit(term)
+	if strings.Contains(pkg, ".") {
+		return goPage(pkg, sym, width)
+	}
+	std, err := goStd()
+	if err != nil {
+		return nil, err
+	}
+	if path, ok := std[strings.ToLower(pkg)]; ok {
+		return goPage(path, sym, width)
+	}
+	if sym == "" {
+		if p, err := goPage("builtin", pkg, width); p != nil || err != nil {
+			return p, err
+		}
+	}
+	if p, err := goSpec(term, width); p != nil || err != nil {
+		return p, err
+	}
+	if pkg != strings.ToLower(pkg) {
+		hit, err := goSearch(strings.ReplaceAll(term, " ", "."), "symbol")
+		if err != nil || hit == "" {
+			return nil, err
+		}
+		path, s, _ := strings.Cut(hit, "#")
+		return goPage(path, s, width)
+	}
+	if sym != "" {
+		return nil, nil
+	}
+	hit, err := goSearch(pkg, "package")
+	if err != nil || !strings.HasSuffix(strings.ToLower(hit), "/"+strings.ToLower(pkg)) {
+		return nil, err
+	}
+	return goPage(hit, "", width)
 }
 
 func pkgName(term string) string { return strings.ReplaceAll(strings.ToLower(term), " ", "-") }

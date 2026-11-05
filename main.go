@@ -82,7 +82,9 @@ func main() {
 			found, used = p, s.Name
 			break
 		}
-		missed = append(missed, s.Name)
+		if id != "wikititle" {
+			missed = append(missed, s.Name)
+		}
 	}
 	if found == nil {
 		fmt.Fprintf(os.Stderr, "nothing found for %q\n", query)
@@ -108,14 +110,15 @@ func main() {
 	}
 	fmt.Fprintf(&b, "%s  %s\n%s\n\n%s\n", bold(found.Title), dim(used), dim(shown), found.Body)
 
+	out := sanitize(b.String())
 	if !plain && term.IsTerminal(int(os.Stdout.Fd())) {
 		less := exec.Command("less", "-RFX")
-		less.Stdin = strings.NewReader(b.String())
+		less.Stdin = strings.NewReader(out)
 		less.Stdout = os.Stdout
 		less.Stderr = os.Stderr
 		if less.Run() == nil {
 			return
 		}
 	}
-	fmt.Print(b.String())
+	fmt.Print(out)
 }

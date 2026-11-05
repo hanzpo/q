@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,15 +60,25 @@ var added = []example{
 	{"supabase realtime", "supabase"}, {"bun install", "bun"}, {"expo updates", "expo"}, {"useRef", "react"}, {"nextjs image", "nextjs"},
 }
 
-func TestAdded(t *testing.T)   { score(t, added) }
-func TestLast(t *testing.T)    { score(t, last) }
-func TestFresh(t *testing.T)   { score(t, fresh) }
+func TestAdded(t *testing.T) { score(t, added) }
+func TestLast(t *testing.T)  { score(t, last) }
+func TestFresh(t *testing.T) { score(t, fresh) }
+func realSites(got []string) []string {
+	var out []string
+	for _, id := range got {
+		if id != "wikititle" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func TestHeldOut(t *testing.T) { score(t, heldOut) }
 
 func score(t *testing.T, set []example) {
 	right := 0
 	for _, e := range set {
-		got := routeWith(e.Query, nil)
+		got := realSites(routeWith(e.Query, nil))
 		if got[0] == e.Site {
 			right++
 		} else {
@@ -95,7 +107,7 @@ func TestTerm(t *testing.T) {
 }
 
 func TestFallbacks(t *testing.T) {
-	got := routeWith("rust", nil)
+	got := realSites(routeWith("rust", nil))
 	for _, id := range got[1:] {
 		if id == "weather" || id == "notes" {
 			t.Fatalf("got %v", got)
@@ -138,7 +150,7 @@ func TestNamedSitesDontFallBack(t *testing.T) {
 
 func TestUnnamedProductsNeedARule(t *testing.T) {
 	for _, q := range []string{"kv cache", "kv cache docs"} {
-		got := routeWith(q, nil)
+		got := realSites(routeWith(q, nil))
 		for _, id := range got {
 			if siteByID(id).Explicit {
 				t.Errorf("%s: got %v", q, got)
@@ -165,7 +177,7 @@ func TestWikipediaDropsDocWords(t *testing.T) {
 
 func TestFuzzySitesAreNotFallbacks(t *testing.T) {
 	for _, q := range []string{"flash attention", "kv cache", "raft consensus"} {
-		got := routeWith(q, nil)
+		got := realSites(routeWith(q, nil))
 		for _, id := range got[1:] {
 			if siteByID(id).Fuzzy {
 				t.Errorf("%s: got %v", q, got)
@@ -193,5 +205,129 @@ func TestSlowHostTimesOut(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("took %v", time.Since(start))
+	}
+}
+
+func TestRoutingShapes(t *testing.T) {
+	for q, want := range map[string]string{
+		"claude monet":                  "claude wikititle",
+		"lymph node":                    "node wikititle",
+		"man city":                      "wikititle man",
+		"go fish":                       "wikititle go",
+		"notes on a scandal":            "wikititle notes",
+		"meaning of life":               "wikititle dictionary",
+		"go time":                       "go",
+		"man tar":                       "man",
+		"TCP/IP":                        "wikititle github wikipedia",
+		"the matrix":                    "",
+		"asyncio":                       "wikititle python wikipedia",
+		"how do metals react with acid": "react stackoverflow wikititle wikipedia",
+	} {
+		got := strings.Join(routeWith(q, nil), " ")
+		if want == "" {
+			if !strings.HasPrefix(got, "wikititle") {
+				t.Errorf("%s: got %s", q, got)
+			}
+		} else if got != want {
+			t.Errorf("%s: got %q want %q", q, got, want)
+		}
+	}
+	if got := routeWith("temperature in kelvin", nil); strings.Contains(strings.Join(got, " "), "weather") {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestSanitize(t *testing.T) {
+	for _, in := range []string{"a\x1b]52;c;ZXZpbA==\x07b", "a\x1b[2Jb", "a\x9bb", "a\x07b"} {
+		if out := sanitize(in); strings.ContainsAny(out, "\x1b\x07\u009b") {
+			t.Errorf("%q kept control characters: %q", in, out)
+		}
+	}
+	if got := sanitize("line\n\tnext"); got != "line\n\tnext" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestTables(t *testing.T) {
+	if got := renderHTML(`<table><caption>Cap</caption><tr><td>a</td><td>b</td></tr></table>`, "https://x.io/", 60); !strings.HasPrefix(got, "Cap") {
+		t.Errorf("caption: %q", got)
+	}
+	got := renderHTML(`<table><tr><td rowspan=2>a</td><td>b</td></tr><tr><td>c</td></tr></table>`, "https://x.io/", 60)
+	if lines := strings.Split(got, "\n"); !strings.HasPrefix(lines[1], "   c") {
+		t.Errorf("rowspan: %q", got)
+	}
+	wide := renderHTML("<table><tr>"+strings.Repeat("<td>longcellvalue</td>", 12)+"</tr></table>", "https://x.io/", 40)
+	for _, l := range strings.Split(wide, "\n") {
+		if vis(l) > 40 {
+			t.Errorf("wide line: %q", l)
+		}
+	}
+	if got := wrap([]seg{{strings.Repeat("x", 30), style{}}}, 10); len(got) != 3 {
+		t.Errorf("long word: %q", got)
+	}
+}
+
+func TestMathAndCitations(t *testing.T) {
+	got := renderHTML(`<p>x <span><math><annotation>{\displaystyle a}</annotation></math><img alt="{\displaystyle a}"></span> y<sup class="x"><a>[1]</a></sup> E=mc<sup>2</sup></p>`, "https://x.io/", 60)
+	if got != "x a y E=mc^2" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.URL.Path == "/missing" {
+			w.WriteHeader(404)
+			return
+		}
+		if r.URL.Path == "/blocked" {
+			w.Write([]byte("<html><title>Just a moment...</title></html>"))
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	fetch(srv.URL+"/missing", req{})
+	fetch(srv.URL+"/missing", req{})
+	if hits != 1 {
+		t.Errorf("404 fetched %d times", hits)
+	}
+	if b, err := fetch(srv.URL+"/blocked", req{}); err == nil || b != nil {
+		t.Errorf("block page accepted: %q %v", b, err)
+	}
+	t.Setenv("XDG_CACHE_HOME", "/dev/null/nope")
+	if b, err := fetch(srv.URL+"/ok", req{}); err != nil || !bytes.Equal(b, []byte("ok")) {
+		t.Errorf("unwritable cache: %q %v", b, err)
+	}
+}
+
+func TestRetriesRateLimit(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits == 1 {
+			w.WriteHeader(429)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	if b, err := fetch(srv.URL+"/x", req{}); err != nil || string(b) != "ok" {
+		t.Fatalf("got %q %v", b, err)
+	}
+}
+
+func TestPythonMatching(t *testing.T) {
+	idx := map[string]string{"os.path": "a", "pathlib.Path": "b"}
+	if got := pyMatch(idx, func(k string) bool { return len(k) > 0 && k[len(k)-5:] == ".Path" }); got != "pathlib.Path" {
+		t.Errorf("got %q", got)
+	}
+	labels := []llmsEntry{{"Using locks, conditions, and semaphores in the with statement", "a", ""}, {"The with statement", "b", ""}}
+	if got := pyLabelMatch(labels, "with statement"); got == nil || got.url != "b" {
+		t.Errorf("got %v", got)
 	}
 }

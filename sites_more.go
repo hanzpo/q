@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -238,11 +239,14 @@ func tldrGet(term string, width int) (*Page, error) {
 	return nil, nil
 }
 
+var githubRepo = regexp.MustCompile(`^(?:https?://)?(?:www\.)?(?:github\.com/)?([\w.-]+/[\w.-]+?)(?:\.git)?(?:[/#?].*)?$`)
+
 func githubGet(term string, width int) (*Page, error) {
-	repo := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(term, "https://"), "github.com/"), "/")
-	if strings.Count(repo, "/") != 1 {
+	m := githubRepo.FindStringSubmatch(term)
+	if m == nil {
 		return nil, nil
 	}
+	repo := m[1]
 	web := "https://github.com/" + repo
 	for _, f := range []string{"README.md", "readme.md", "Readme.md"} {
 		b, err := fetch("https://raw.githubusercontent.com/"+repo+"/HEAD/"+f, req{})
@@ -358,7 +362,7 @@ func etymologyGet(term string, width int) (*Page, error) {
 			return nil, err
 		}
 		body := doc.Find("body")
-		body.Find(".mw-editsection, .sister-wikipedia, .thumb, style, h3, h4, .mw-heading").Remove()
+		body.Find(".mw-editsection, .sister-wikipedia, .thumb, style, h3, h4, .mw-heading, sup.reference, sup.mw-ref").Remove()
 		body.Find("ol, table").Remove()
 		if t := renderSel(body, u, width); t != "" {
 			out = append(out, t)
@@ -381,11 +385,14 @@ func currencyGet(term string, width int) (*Page, error) {
 	if m[1] != "" {
 		v, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
 		if err != nil {
-			return nil, err
+			return nil, nil
 		}
 		amount = v
 	}
 	from, to := strings.ToUpper(m[2]), strings.ToUpper(m[3])
+	if from == to {
+		return &Page{from + " to " + to, "https://frankfurter.dev", bold(fmt.Sprintf("%.2f %s = %.2f %s", amount, from, amount, to))}, nil
+	}
 	u := "https://api.frankfurter.dev/v1/latest?base=" + from + "&symbols=" + to
 	var data struct {
 		Date  string             `json:"date"`
@@ -505,7 +512,7 @@ func archwikiGet(term string, width int) (*Page, error) {
 		return nil, err
 	}
 	body := doc.Find("#mw-content-text")
-	body.Find(".mw-editsection, #toc, .toc, .catlinks, .printfooter, .archwiki-template-meta-related-articles-start").Remove()
+	body.Find(".mw-editsection, #toc, .toc, .catlinks, .printfooter, .archwiki-template-meta-related-articles-start, sup.reference").Remove()
 	return &Page{title, u, renderSel(body, u, width)}, nil
 }
 
@@ -526,6 +533,9 @@ func postgresGet(term string, width int) (*Page, error) {
 		}
 	}
 	if href == "" {
+		if !bytes.Contains(b, []byte("indexterm")) {
+			forget(root + "bookindex.html")
+		}
 		return nil, nil
 	}
 	u := root + href
@@ -558,6 +568,9 @@ func sqliteGet(term string, width int) (*Page, error) {
 	var entries []llmsEntry
 	for _, m := range sqliteLink.FindAllSubmatch(b, -1) {
 		entries = append(entries, llmsEntry{string(m[2]), string(m[1]), ""})
+	}
+	if len(entries) == 0 {
+		forget("https://sqlite.org/lang.html")
 	}
 	e := llmsBest(entries, term)
 	if e == nil {
@@ -819,6 +832,12 @@ func booksGet(term string, width int) (*Page, error) {
 		return nil, err
 	}
 	d := data.Docs[0]
+	known := strings.ToLower(d.Title + " " + strings.Join(d.Authors, " "))
+	for _, w := range strings.Fields(strings.ToLower(term)) {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(w) + `\b`).MatchString(known) {
+			return nil, nil
+		}
+	}
 	u := "https://openlibrary.org" + d.Key
 	head := dim(fmt.Sprintf("%s, %d", strings.Join(d.Authors, ", "), d.Year))
 	var work struct {
@@ -869,12 +888,13 @@ const docWords = "docs doc documentation reference guide how do i to use using i
 
 func init() {
 	sites = append(sites,
+		&Site{ID: "wikititle", Name: "Wikipedia", Get: wikiTitleGet, Explicit: true},
 		&Site{ID: "tldr", Name: "tldr pages", Get: tldrGet, Noise: noise("tldr example examples of for cheatsheet")},
 		&Site{ID: "docsrs", Name: "docs.rs", Get: docsrsGet, Noise: noise("docs.rs docs doc documentation rust"), Explicit: true},
 		&Site{ID: "github", Name: "GitHub", Get: githubGet, Noise: noise("github gh repo readme"), Explicit: true},
 		&Site{ID: "arxiv", Name: "arXiv", Get: arxivGet, Noise: noise("arxiv paper papers on about"), Explicit: true},
 		&Site{ID: "rfc", Name: "RFC Editor", Get: rfcGet, Explicit: true},
-		&Site{ID: "etymology", Name: "Wiktionary", Get: etymologyGet, Noise: noise("etymology origin of the word")},
+		&Site{ID: "etymology", Name: "Wiktionary", Get: etymologyGet, Explicit: true, Noise: noise("etymology origin of the word")},
 		&Site{ID: "currency", Name: "Frankfurter", Get: currencyGet, Explicit: true},
 		&Site{ID: "caniuse", Name: "caniuse", Get: caniuseGet, Noise: noise("can i use caniuse browser support for"), Explicit: true},
 		&Site{ID: "archwiki", Name: "ArchWiki", Get: archwikiGet, Noise: noise("arch archwiki linux wiki"), Explicit: true},
