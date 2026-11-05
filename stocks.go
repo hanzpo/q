@@ -19,33 +19,55 @@ type nasdaqHit struct {
 	Asset  string `json:"asset"`
 }
 
+var (
+	brandTickers = map[string]string{
+		"google": "GOOGL", "youtube": "GOOGL", "facebook": "META", "instagram": "META", "whatsapp": "META", "snapchat": "SNAP",
+		"coke": "KO", "coca cola": "KO", "coca-cola": "KO", "pepsi": "PEP", "mcdonalds": "MCD", "mcdonald's": "MCD",
+		"chase": "JPM", "jp morgan": "JPM", "jpmorgan": "JPM", "jpmorgan chase": "JPM", "goldman": "GS", "goldman sachs": "GS",
+		"morgan stanley": "MS", "bank of america": "BAC", "wells fargo": "WFC", "berkshire": "BRK.B", "berkshire hathaway": "BRK.B",
+		"johnson & johnson": "JNJ", "johnson and johnson": "JNJ", "j&j": "JNJ", "at&t": "T", "att": "T", "exxon": "XOM", "exxonmobil": "XOM", "exxon mobil": "XOM", "tsmc": "TSM", "taiwan semiconductor": "TSM",
+	}
+	notCommon = regexp.MustCompile(`(?i)\b(warrants?|units?|rights?|preferred|notes?|debentures?)\b`)
+)
+
 func pickSymbol(hits []nasdaqHit, term string) *nasdaqHit {
-	var tradable []*nasdaqHit
+	var stocks, funds []*nasdaqHit
 	for i := range hits {
-		if hits[i].Asset == "STOCKS" || hits[i].Asset == "ETF" {
-			tradable = append(tradable, &hits[i])
+		h := &hits[i]
+		switch {
+		case h.Asset == "ETF":
+			funds = append(funds, h)
+		case h.Asset == "STOCKS" && !strings.Contains(h.Symbol, ".PR") && !notCommon.MatchString(h.Name):
+			stocks = append(stocks, h)
 		}
 	}
-	bySymbol := func() *nasdaqHit {
-		for _, h := range tradable {
-			if strings.EqualFold(h.Symbol, term) {
+	all := append(append([]*nasdaqHit{}, stocks...), funds...)
+	first := func(list []*nasdaqHit, match func(*nasdaqHit) bool) *nasdaqHit {
+		for _, h := range list {
+			if match(h) {
 				return h
 			}
 		}
 		return nil
 	}
+	bySymbol := func(h *nasdaqHit) bool { return strings.EqualFold(h.Symbol, term) }
+	quoted := regexp.QuoteMeta(term)
+	prefix := regexp.MustCompile(`(?i)^(the )?` + quoted + `\b`)
+	anywhere := regexp.MustCompile(`(?i)\b` + quoted + `\b`)
+	byPrefix := func(h *nasdaqHit) bool { return prefix.MatchString(h.Name) }
+	byWord := func(h *nasdaqHit) bool { return anywhere.MatchString(h.Name) }
 	if term == strings.ToUpper(term) {
-		if h := bySymbol(); h != nil {
+		if h := first(all, bySymbol); h != nil {
 			return h
 		}
 	}
-	word := regexp.MustCompile(`(?i)^` + regexp.QuoteMeta(term) + `\b`)
-	for _, h := range tradable {
-		if word.MatchString(h.Name) && !strings.Contains(h.Symbol, ".") {
-			return h
-		}
+	if h := first(stocks, byPrefix); h != nil {
+		return h
 	}
-	return bySymbol()
+	if h := first(all, bySymbol); h != nil {
+		return h
+	}
+	return first(stocks, byWord)
 }
 
 type nasdaqLine struct {
@@ -89,12 +111,20 @@ func stocksGet(term string, width int) (*Page, error) {
 	if lookup == "" {
 		return nil, nil
 	}
-	if sym, ok := cryptoNames[strings.ToLower(lookup)]; ok {
+	key := strings.ToLower(lookup)
+	if sym, ok := cryptoNames[key]; ok {
 		return cryptoGet(sym)
+	}
+	if m, ok := marketSymbols[key]; ok {
+		return marketGet(m)
 	}
 	var q nasdaqQuote
 	class := "stocks"
-	if tickerShape.MatchString(lookup) {
+	brand, isBrand := brandTickers[key]
+	if isBrand {
+		lookup = brand
+	}
+	if isBrand || tickerShape.MatchString(lookup) {
 		if _, err := fetchJSON(nasdaqQuoteURL(lookup, class), req{ttl: time.Minute}, &q); err != nil {
 			return nil, err
 		}
@@ -140,6 +170,75 @@ func stocksGet(term string, width int) (*Page, error) {
 	return &Page{d.Name + " (" + d.Symbol + ")", web, strings.TrimRight(strings.Join(out, "\n"), "\n")}, nil
 }
 
+type market struct{ symbol, unit string }
+
+var marketSymbols = func() map[string]market {
+	out := map[string]market{}
+	for names, m := range map[string]market{
+		"oil|crude|crude oil|wti|wti crude":   {"@CL.1", "USD per barrel, front-month futures"},
+		"brent|brent crude|brent oil":         {"@LCO.1", "USD per barrel, front-month futures"},
+		"gold":                                {"@GC.1", "USD per troy ounce, front-month futures"},
+		"silver":                              {"@SI.1", "USD per troy ounce, front-month futures"},
+		"platinum":                            {"@PL.1", "USD per troy ounce, front-month futures"},
+		"copper":                              {"@HG.1", "USD per pound, front-month futures"},
+		"natural gas|nat gas":                 {"@NG.1", "USD per MMBtu, front-month futures"},
+		"gasoline|gas|rbob":                   {"@RB.1", "USD per gallon, front-month futures"},
+		"wheat":                               {"@W.1", "US cents per bushel, front-month futures"},
+		"corn":                                {"@C.1", "US cents per bushel, front-month futures"},
+		"soybeans|soybean":                    {"@S.1", "US cents per bushel, front-month futures"},
+		"coffee":                              {"@KC.1", "US cents per pound, front-month futures"},
+		"s&p 500|s&p500|s&p|sp500|sp 500|spx": {".SPX", ""},
+		"dow|dow jones|djia":                  {".DJI", ""},
+		"nasdaq|nasdaq composite":             {".IXIC", ""},
+		"russell 2000|russell":                {".RUT", ""},
+		"vix":                                 {".VIX", ""},
+		"2 year treasury|2 year|2y|2yr":       {"US2Y", "yield"},
+		"10 year treasury|10 year|10y|10yr|treasury": {"US10Y", "yield"},
+		"30 year treasury|30 year|30y|30yr":          {"US30Y", "yield"},
+	} {
+		for _, n := range strings.Split(names, "|") {
+			out[n] = m
+		}
+	}
+	return out
+}()
+
+func marketGet(m market) (*Page, error) {
+	var data struct {
+		Result struct {
+			Quotes []struct {
+				Name     string `json:"name"`
+				Last     string `json:"last"`
+				Change   string `json:"change"`
+				Percent  string `json:"change_pct"`
+				Time     string `json:"last_timedate"`
+				High     string `json:"high"`
+				Low      string `json:"low"`
+				YearHigh string `json:"yrhiprice"`
+				YearLow  string `json:"yrloprice"`
+			} `json:"FormattedQuote"`
+		} `json:"FormattedQuoteResult"`
+	}
+	u := "https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json&symbols=" + url.QueryEscape(m.symbol)
+	ok, err := fetchJSON(u, req{ttl: time.Minute}, &data)
+	if err != nil || !ok || len(data.Result.Quotes) == 0 || data.Result.Quotes[0].Last == "" {
+		return nil, err
+	}
+	q := data.Result.Quotes[0]
+	out := []string{bold(fmt.Sprintf("%s  %s (%s)", q.Last, q.Change, q.Percent))}
+	if m.unit != "" {
+		out = append(out, dim(m.unit))
+	}
+	out = append(out, dim("Last update "+q.Time), "")
+	if q.High != "" && q.High != "0.00" {
+		out = append(out, fmt.Sprintf("%-18s%s - %s", "Day range:", q.Low, q.High))
+	}
+	if q.YearHigh != "" {
+		out = append(out, fmt.Sprintf("%-18s%s - %s", "52 week range:", q.YearLow, q.YearHigh))
+	}
+	return &Page{q.Name, "https://www.cnbc.com/quotes/" + m.symbol, strings.TrimRight(strings.Join(out, "\n"), "\n")}, nil
+}
+
 func cryptoGet(sym string) (*Page, error) {
 	var data struct {
 		Data struct {
@@ -158,5 +257,5 @@ func cryptoGet(sym string) (*Page, error) {
 
 func init() {
 	sites = append(sites, &Site{ID: "stocks", Name: "Nasdaq", Get: stocksGet, Explicit: true, EmptyOK: true,
-		Noise: noise("stock stocks share shares price prices quote current latest live ticker symbol of for the today now what's whats what is how much market value a an in usd")})
+		Noise: noise("stock stocks share shares price prices quote current latest live spot ticker symbol index yield rate of for the today now what's whats what is how much market value a an in usd")})
 }

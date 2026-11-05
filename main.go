@@ -102,6 +102,9 @@ func main() {
 	if strings.HasPrefix(found.URL, "https://www.coinbase.com/") {
 		used = "Coinbase"
 	}
+	if strings.HasPrefix(found.URL, "https://www.cnbc.com/") {
+		used = "CNBC"
+	}
 
 	var b strings.Builder
 	if len(missed) > 0 {

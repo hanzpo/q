@@ -348,6 +348,50 @@ func TestStockRouting(t *testing.T) {
 	}
 }
 
+func TestMarketTerms(t *testing.T) {
+	for q, want := range map[string]string{
+		"price of crude oil": "@CL.1", "gold price": "@GC.1", "price of natural gas": "@NG.1", "s&p 500": ".SPX",
+		"dow jones today": ".DJI", "10 year treasury yield": "US10Y", "vix": ".VIX", "price of silver": "@SI.1",
+	} {
+		if q != "vix" {
+			if got := routeWith(q, nil); got[0] != "stocks" {
+				t.Errorf("%s: route %v", q, got)
+			}
+		}
+		if got := marketSymbols[strings.ToLower(siteByID("stocks").term(q))]; got.symbol != want {
+			t.Errorf("%s: got %q", q, got.symbol)
+		}
+	}
+}
+
+func TestPickPrefersRealCompanies(t *testing.T) {
+	hits := []nasdaqHit{
+		{"DEPW", "Google DeepMind AI Lab Ecosystem ETF", "ETF"},
+		{"DIS", "The Walt Disney Company Common Stock", "STOCKS"},
+		{"ABCW", "Apple Warrants", "STOCKS"},
+		{"BA", "The Boeing Company Common Stock", "STOCKS"},
+	}
+	if got := pickSymbol(hits, "google"); got != nil {
+		t.Errorf("etf matched on a word in its name: %v", got)
+	}
+	if got := pickSymbol(hits, "disney"); got == nil || got.Symbol != "DIS" {
+		t.Errorf("got %v", got)
+	}
+	if got := pickSymbol(hits, "boeing"); got == nil || got.Symbol != "BA" {
+		t.Errorf("got %v", got)
+	}
+	if got := pickSymbol(hits, "apple"); got != nil {
+		t.Errorf("warrant matched: %v", got)
+	}
+}
+
+func TestPickKeepsForeignListings(t *testing.T) {
+	hits := []nasdaqHit{{"SONY", "Sony Group Corporation American Depositary Shares", "STOCKS"}}
+	if got := pickSymbol(hits, "sony"); got == nil || got.Symbol != "SONY" {
+		t.Errorf("got %v", got)
+	}
+}
+
 func TestPickSymbol(t *testing.T) {
 	ford := []nasdaqHit{{"FORDX", "Fidelity International Growth", "MUTUALFUNDS"}, {"FORD", "Forward Industries", "STOCKS"}, {"F", "Ford Motor Company Common Stock", "STOCKS"}, {"F.PRB", "Ford Motor Company", "STOCKS"}}
 	if got := pickSymbol(ford, "ford"); got == nil || got.Symbol != "F" {
