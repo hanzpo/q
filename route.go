@@ -55,7 +55,7 @@ var rules = []rule{
 	r(`(?i)\b(synonyms?|antonyms?|thesaurus|another word|other words?|opposite of|words? like|ways to say)\b`, "thesaurus"),
 	r(`(?i)^(define|definition of|meaning of)\b|\bwhat does \S+ mean\b|\bmeaning$`, "dictionary"),
 	r(`(?i)^(man|manual for)\s|\bman ?page\b`, "man"),
-	r(`(?i)\b(weather|forecast)\b`, "weather"),
+	r(`(?i)\b(weather|forecast|temperature in|will it rain)\b`, "weather"),
 	r(`\bstd::(collections|fs|io|sync|vec|env|net|rc|cell)\b`, "rust"),
 	r(`(?i)\bcppreference\b|(^|\s)(c\+\+\d*|cpp)(\s|$)|\bstd::\w+`, "cppreference"),
 	r(`^\w+::\w+`, "rust"),
@@ -72,10 +72,12 @@ var rules = []rule{
 
 var codeShape = regexp.MustCompile(`::|[._]|[a-z][A-Z]|^[A-Z]{2,}[a-z]`)
 
+var genericWords = regexp.MustCompile(`(?i)\b(docs?|documentation|reference)\b`)
+
 var splitWords = regexp.MustCompile(`[^\p{L}\p{N}_+:.#]+`)
 
 func features(q string) []string {
-	s := strings.ToLower(q)
+	s := strings.TrimSpace(strings.ToLower(genericWords.ReplaceAllString(q, " ")))
 	var words []string
 	for _, w := range splitWords.Split(s, -1) {
 		if w != "" {
@@ -253,16 +255,25 @@ func routeWith(query string, extra []example) []string {
 	if first == "" {
 		first = symbolSite(query)
 	}
-	order := classify(query, extra)
+	if first != "" && siteByID(first).Explicit {
+		return []string{first}
+	}
+	corrected := map[string]bool{}
+	for _, e := range extra {
+		corrected[e.Site] = true
+	}
+	var order []string
+	for _, l := range classify(query, extra) {
+		if !siteByID(l).Explicit || corrected[l] {
+			order = append(order, l)
+		}
+	}
 	if first != "" {
 		order = promote(first, order)
 	}
-	if siteByID(order[0]).Explicit {
-		return order[:1]
-	}
 	picked := order[:1]
 	for _, l := range order[1:] {
-		if len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit {
+		if len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit && !siteByID(l).Fuzzy {
 			picked = append(picked, l)
 		}
 	}

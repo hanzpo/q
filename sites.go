@@ -24,6 +24,7 @@ type Site struct {
 	Noise    map[string]bool
 	EmptyOK  bool
 	Explicit bool
+	Fuzzy    bool
 	Get      func(term string, width int) (*Page, error)
 }
 
@@ -974,10 +975,10 @@ var sites = []*Site{
 	{ID: "python", Name: "Python docs", Get: pythonGet, Noise: noise("python python3 py docs doc documentation reference stdlib standard library module")},
 	{ID: "rust", Name: "Rust std docs", Get: rustGet, Noise: noise("rust rustlang docs doc documentation reference std stdlib standard library macro")},
 	{ID: "go", Name: "pkg.go.dev", Get: goGet, Noise: noise("go golang docs doc documentation reference package pkg stdlib standard library")},
-	{ID: "mdn", Name: "MDN", Get: mdnGet, Noise: noise("mdn docs doc documentation reference javascript js")},
+	{ID: "mdn", Name: "MDN", Get: mdnGet, Fuzzy: true, Noise: noise("mdn docs doc documentation reference javascript js")},
 	{ID: "apple", Name: "Apple Developer", Get: appleGet, Noise: noise("apple developer docs doc documentation reference swiftui swift uikit appkit foundation storekit ios macos")},
-	{ID: "wikipedia", Name: "Wikipedia", Get: wikipediaGet, Noise: noise("wikipedia wiki who what when where was is are were the")},
-	{ID: "stackoverflow", Name: "Stack Overflow", Get: stackoverflowGet, Noise: noise("stackoverflow so")},
+	{ID: "wikipedia", Name: "Wikipedia", Get: wikipediaGet, Noise: noise("wikipedia wiki who what when where was is are were the docs doc documentation reference")},
+	{ID: "stackoverflow", Name: "Stack Overflow", Get: stackoverflowGet, Fuzzy: true, Noise: noise("stackoverflow so")},
 	{ID: "npm", Name: "npm", Get: npmGet, Noise: pkgNoise},
 	{ID: "pypi", Name: "PyPI", Get: pypiGet, Noise: pkgNoise},
 	{ID: "crates", Name: "crates.io", Get: cratesGet, Noise: pkgNoise},

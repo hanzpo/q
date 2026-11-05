@@ -128,3 +128,41 @@ func TestNamedSitesDontFallBack(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestUnnamedProductsNeedARule(t *testing.T) {
+	for _, q := range []string{"kv cache", "kv cache docs"} {
+		got := routeWith(q, nil)
+		for _, id := range got {
+			if siteByID(id).Explicit {
+				t.Errorf("%s: got %v", q, got)
+			}
+		}
+		if got[len(got)-1] != "wikipedia" {
+			t.Errorf("%s: got %v", q, got)
+		}
+	}
+}
+
+func TestCorrectionsReachNamedSites(t *testing.T) {
+	got := classify("kv cache layers", []example{{"kv cache", "arxiv"}})
+	if got[0] != "arxiv" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestWikipediaDropsDocWords(t *testing.T) {
+	if got := siteByID("wikipedia").term("kv cache docs"); got != "kv cache" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFuzzySitesAreNotFallbacks(t *testing.T) {
+	for _, q := range []string{"flash attention", "kv cache", "raft consensus"} {
+		got := routeWith(q, nil)
+		for _, id := range got[1:] {
+			if siteByID(id).Fuzzy {
+				t.Errorf("%s: got %v", q, got)
+			}
+		}
+	}
+}
