@@ -200,7 +200,11 @@ func cppGet(term string, width int) (*Page, error) {
 	if root, ok := idx[parts[0]]; ok {
 		tries = append(tries, strings.Join(append([]string{root}, parts[1:]...), "/"))
 	}
-	tries = append(tries, cppRoot+"/keyword/"+parts[0], cppRoot+"/language/"+parts[0], cppRoot+"/"+parts[0])
+	joined := strings.Join(parts, "_")
+	for _, name := range []string{joined, strings.TrimSuffix(joined, "s"), strings.Join(parts, "-"), parts[0], strings.TrimSuffix(parts[0], "s")} {
+		tries = append(tries, cppRoot+"/language/"+name, cppRoot+"/keyword/"+name)
+	}
+	tries = append(tries, cppRoot+"/"+parts[0])
 	for _, u := range tries {
 		b, err := fetch(u, req{})
 		if err != nil {

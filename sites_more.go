@@ -263,7 +263,7 @@ func arxivGet(term string, width int) (*Page, error) {
 	if !arxivID.MatchString(term) {
 		q = "search_query=" + url.QueryEscape(`ti:"`+term+`"`) + "&sortBy=relevance"
 	}
-	b, err := fetch("https://export.arxiv.org/api/query?max_results=20&"+q, req{ua: apiUA, timeout: time.Minute})
+	b, err := fetch("https://export.arxiv.org/api/query?max_results=20&"+q, req{ua: apiUA, timeout: 25 * time.Second})
 	if err != nil || b == nil {
 		return nil, err
 	}

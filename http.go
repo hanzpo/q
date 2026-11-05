@@ -8,9 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
@@ -20,7 +24,36 @@ const (
 	month     = 30 * day
 )
 
-var client = &http.Client{}
+var (
+	client = &http.Client{}
+	runCtx = context.Background()
+)
+
+func waitingFor(url string) func() {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return func() {}
+	}
+	host := url
+	if u, err := neturl.Parse(url); err == nil {
+		host = u.Host
+	}
+	var mu sync.Mutex
+	shown := false
+	timer := time.AfterFunc(time.Second, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		shown = true
+		fmt.Fprint(os.Stderr, "\r\x1b[2K"+dim("waiting for "+host))
+	})
+	return func() {
+		timer.Stop()
+		mu.Lock()
+		defer mu.Unlock()
+		if shown {
+			fmt.Fprint(os.Stderr, "\r\x1b[2K")
+		}
+	}
+}
 
 type req struct {
 	ttl     time.Duration
@@ -55,10 +88,11 @@ func fetch(url string, o req) ([]byte, error) {
 		return os.ReadFile(path)
 	}
 	if o.timeout == 0 {
-		o.timeout = 20 * time.Second
+		o.timeout = 8 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	ctx, cancel := context.WithTimeout(runCtx, o.timeout)
 	defer cancel()
+	defer waitingFor(url)()
 	r, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err

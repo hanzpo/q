@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -56,6 +59,10 @@ func main() {
 		width = min(w, 110) - 2
 	}
 
+	var cancel context.CancelFunc
+	runCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	order := route(query)
 	if via != "" {
 		order = []string{via}
@@ -66,7 +73,9 @@ func main() {
 	for _, id := range order {
 		s := siteByID(id)
 		p, err := s.Get(s.term(query), width)
-		if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintln(os.Stderr, dim(s.Name+" timed out"))
+		} else if err != nil {
 			fmt.Fprintln(os.Stderr, dim(s.Name+": "+err.Error()))
 		}
 		if p != nil && p.Body != "" {

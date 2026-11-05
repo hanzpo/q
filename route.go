@@ -72,6 +72,8 @@ var rules = []rule{
 
 var codeShape = regexp.MustCompile(`::|[._]|[a-z][A-Z]|^[A-Z]{2,}[a-z]`)
 
+var namedTools = set("cppreference", "go", "postgres", "sqlite", "git", "lua", "node", "man", "brew")
+
 var genericWords = regexp.MustCompile(`(?i)\b(docs?|documentation|reference)\b`)
 
 var splitWords = regexp.MustCompile(`[^\p{L}\p{N}_+:.#]+`)
@@ -255,7 +257,7 @@ func routeWith(query string, extra []example) []string {
 	if first == "" {
 		first = symbolSite(query)
 	}
-	if first != "" && siteByID(first).Explicit {
+	if first != "" && (siteByID(first).Explicit || namedTools[first]) {
 		return []string{first}
 	}
 	corrected := map[string]bool{}
@@ -273,7 +275,7 @@ func routeWith(query string, extra []example) []string {
 	}
 	picked := order[:1]
 	for _, l := range order[1:] {
-		if len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit && !siteByID(l).Fuzzy {
+		if first == "" && len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit && !siteByID(l).Fuzzy {
 			picked = append(picked, l)
 		}
 	}

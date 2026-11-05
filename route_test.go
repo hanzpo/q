@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
 
 var heldOut = []example{
 	{"antonyms for lazy", "thesaurus"}, {"a different word for smart", "thesaurus"}, {"thesaurus cold", "thesaurus"},
@@ -164,5 +171,27 @@ func TestFuzzySitesAreNotFallbacks(t *testing.T) {
 				t.Errorf("%s: got %v", q, got)
 			}
 		}
+	}
+}
+
+func TestNamedLanguageSkipsGuessing(t *testing.T) {
+	got := routeWith("C++ enums", nil)
+	if len(got) != 1 || got[0] != "cppreference" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestSlowHostTimesOut(t *testing.T) {
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-stop }))
+	defer srv.Close()
+	defer close(stop)
+	start := time.Now()
+	_, err := fetch(srv.URL+"/slow", req{timeout: 100 * time.Millisecond, ttl: time.Nanosecond})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("took %v", time.Since(start))
 	}
 }
