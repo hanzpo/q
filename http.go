@@ -1,0 +1,84 @@
+package main
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+const (
+	browserUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+	apiUA     = "q-cli/0.1"
+	day       = 24 * time.Hour
+	month     = 30 * day
+)
+
+var client = &http.Client{Timeout: 20 * time.Second}
+
+type req struct {
+	ttl time.Duration
+	ua  string
+}
+
+func cacheDir() string {
+	base, err := os.UserCacheDir()
+	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
+		base = v
+	} else if err != nil {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "q")
+}
+
+func fetch(url string, o req) ([]byte, error) {
+	if o.ttl == 0 {
+		o.ttl = day
+	}
+	if o.ua == "" {
+		o.ua = browserUA
+	}
+	dir := cacheDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	sum := sha1.Sum([]byte(url))
+	path := filepath.Join(dir, hex.EncodeToString(sum[:]))
+	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < o.ttl {
+		return os.ReadFile(path)
+	}
+	r, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("User-Agent", o.ua)
+	res, err := client.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == 404 {
+		return nil, nil
+	}
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("%s returned %d", url, res.StatusCode)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	return body, os.WriteFile(path, body, 0o644)
+}
+
+func fetchJSON(url string, o req, into any) (bool, error) {
+	b, err := fetch(url, o)
+	if err != nil || b == nil {
+		return false, err
+	}
+	return true, json.Unmarshal(b, into)
+}
