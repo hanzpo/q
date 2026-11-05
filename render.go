@@ -86,7 +86,7 @@ var (
 	skipTags  = set("script", "style", "noscript", "svg", "button", "form", "input", "iframe", "template", "link", "meta", "nav", "head")
 	blockTags = set("address", "article", "aside", "blockquote", "body", "caption", "center", "dd", "details", "div", "dl", "dt",
 		"figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "main", "ol", "p", "pre",
-		"section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
+		"section", "summary", "table", "textarea", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
 )
 
 type renderer struct {
@@ -430,7 +430,7 @@ func (r *renderer) blocks(n *html.Node, width int) []string {
 				out = append(out, heading(l))
 			}
 			out = append(out, "")
-		case "pre":
+		case "pre", "textarea":
 			var b strings.Builder
 			nodeText(c, &b)
 			src := strings.Split(strings.ReplaceAll(b.String(), "\t", "    "), "\n")

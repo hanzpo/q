@@ -4,7 +4,7 @@ import "testing"
 
 var heldOut = []example{
 	{"antonyms for lazy", "thesaurus"}, {"a different word for smart", "thesaurus"}, {"thesaurus cold", "thesaurus"},
-	{"define obsequious", "dictionary"}, {"what does sycophant mean", "dictionary"}, {"verbose meaning", "dictionary"}, {"etymology of window", "dictionary"},
+	{"define obsequious", "dictionary"}, {"what does sycophant mean", "dictionary"}, {"verbose meaning", "dictionary"}, {"etymology of window", "etymology"},
 	{"std::string", "cppreference"}, {"c++ variant", "cppreference"}, {"make_unique", "cppreference"}, {"std::array docs", "cppreference"}, {"lower_bound", "cppreference"},
 	{"python enumerate", "python"}, {"datetime.timedelta", "python"}, {"python argparse", "python"}, {"shutil.copy", "python"}, {"collections.Counter", "python"},
 	{"rust HashSet", "rust"}, {"Option::map", "rust"}, {"rust Rc", "rust"}, {"Iterator::collect", "rust"}, {"std::fs::read_to_string", "rust"},
@@ -32,6 +32,26 @@ var last = []example{
 	{"when did the berlin wall fall", "wikipedia"}, {"how to kill a process on a port", "stackoverflow"}, {"npm prettier", "npm"}, {"man ssh", "man"}, {"weather chicago", "weather"},
 }
 
+var goQueries = []example{
+	{"strings.Split", "go"}, {"context.WithTimeout", "go"}, {"http.NewRequest", "go"}, {"json.Marshal", "go"}, {"go time", "go"}, {"golang sync mutex", "go"}, {"go slices", "go"},
+	{"pathlib.Path", "python"}, {"subprocess.Popen", "python"}, {"how to read a file in go", "stackoverflow"},
+}
+
+func TestGo(t *testing.T) { score(t, goQueries) }
+
+var added = []example{
+	{"strings.Split", "go"}, {"context.WithTimeout", "go"}, {"http.NewRequest", "go"}, {"json.Marshal", "go"}, {"go time", "go"}, {"golang sync mutex", "go"}, {"github.com/spf13/cobra", "go"},
+	{"pathlib.Path", "python"}, {"subprocess.Popen", "python"}, {"how to read a file in go", "stackoverflow"},
+	{"sed examples", "tldr"}, {"tokio::spawn", "rust"}, {"docs.rs reqwest", "docsrs"}, {"rust-lang/cargo", "github"}, {"net/http", "go"},
+	{"arxiv mixture of experts", "arxiv"}, {"rfc 1149", "rfc"}, {"etymology of window", "etymology"}, {"250 eur to usd", "currency"},
+	{"can i use flexbox gap", "caniuse"}, {"arch wiki bluetooth", "archwiki"}, {"mark twain quotes", "quotes"}, {"postgres upsert", "postgres"},
+	{"sqlite window functions", "sqlite"}, {"git stash", "git"}, {"brew fzf", "brew"}, {"slang bussin", "urban"}, {"node crypto", "node"}, {"fs.mkdir", "node"},
+	{"lua string.gsub", "lua"}, {"1,4,9,16,25", "oeis"}, {"hn zig", "hackernews"}, {"book foundation", "books"}, {"docker image alpine", "docker"},
+	{"cloudflare queues", "cloudflare"}, {"how do i use cloudflare d1", "cloudflare"}, {"claude extended thinking", "claude"}, {"stripe connect", "stripe"},
+	{"supabase realtime", "supabase"}, {"bun install", "bun"}, {"expo updates", "expo"}, {"useRef", "react"}, {"nextjs image", "nextjs"},
+}
+
+func TestAdded(t *testing.T)   { score(t, added) }
 func TestLast(t *testing.T)    { score(t, last) }
 func TestFresh(t *testing.T)   { score(t, fresh) }
 func TestHeldOut(t *testing.T) { score(t, heldOut) }
@@ -82,6 +102,29 @@ func TestFallbacks(t *testing.T) {
 func TestLearnedOverride(t *testing.T) {
 	got := routeWith("rust", []example{{"rust", "wikipedia"}})
 	if got[0] != "wikipedia" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestDocRanking(t *testing.T) {
+	entries := []llmsEntry{
+		{"Collect tax with Checkout", "https://docs.stripe.com/tax/checkout.md", ""},
+		{"Build a Stripe-hosted checkout page", "https://docs.stripe.com/checkout/quickstart.md", ""},
+		{"Test runner", "https://bun.com/docs/test/index.md", ""},
+		{"DOM testing", "https://bun.com/docs/test/dom.md", ""},
+	}
+	for term, want := range map[string]string{"checkout": "Build a Stripe-hosted checkout page", "test": "Test runner"} {
+		if got := llmsBest(entries, term); got == nil || got.title != want {
+			t.Errorf("%s: got %v", term, got)
+		}
+	}
+	if llmsBest(entries, "nonsensexyz") != nil {
+		t.Error("expected no match")
+	}
+}
+
+func TestNamedSitesDontFallBack(t *testing.T) {
+	if got := routeWith("cloudflare nonsensexyz", nil); len(got) != 1 {
 		t.Fatalf("got %v", got)
 	}
 }

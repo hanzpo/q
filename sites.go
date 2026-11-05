@@ -23,6 +23,7 @@ type Site struct {
 	ID, Name string
 	Noise    map[string]bool
 	EmptyOK  bool
+	Explicit bool
 	Get      func(term string, width int) (*Page, error)
 }
 
@@ -319,6 +320,37 @@ func rustFind(items []rustItem, n string) *rustItem {
 }
 
 func rustGet(term string, width int) (*Page, error) {
+	p, err := rustDocs("https://doc.rust-lang.org/std/", term, width)
+	if p != nil || err != nil || !strings.Contains(term, "::") {
+		return p, err
+	}
+	return docsrsGet(term, width)
+}
+
+func docsrsGet(term string, width int) (*Page, error) {
+	krate, rest, _ := strings.Cut(strings.ReplaceAll(term, " ", "::"), "::")
+	base := "https://docs.rs/" + krate + "/latest/" + strings.ReplaceAll(krate, "-", "_") + "/"
+	if rest == "" {
+		return rustPage(base+"index.html", krate, width)
+	}
+	return rustDocs(base, rest, width)
+}
+
+func rustPage(u, title string, width int) (*Page, error) {
+	b, err := fetch(u, req{})
+	if err != nil || b == nil {
+		return nil, err
+	}
+	doc, err := parseDoc(b)
+	if err != nil {
+		return nil, err
+	}
+	main := doc.Find("#main-content")
+	main.Find(".rightside, .src, .anchor, .doc-anchor, .out-of-band, rustdoc-toolbar, .sub-heading").Remove()
+	return &Page{title, u, renderSel(main, u, width)}, nil
+}
+
+func rustDocs(base, term string, width int) (*Page, error) {
 	norm := strings.ReplaceAll(strings.TrimPrefix(term, "std::"), " ", "::")
 	var parts []string
 	for _, p := range strings.Split(norm, "::") {
@@ -329,7 +361,7 @@ func rustGet(term string, width int) (*Page, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
-	b, err := fetch("https://doc.rust-lang.org/std/all.html", req{ttl: month})
+	b, err := fetch(base+"all.html", req{ttl: month})
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +378,7 @@ func rustGet(term string, width int) (*Page, error) {
 	if owner != nil {
 		href, title = owner.href, owner.path
 	}
-	u := "https://doc.rust-lang.org/std/" + href
+	u := base + href
 	page, err := fetch(u, req{})
 	if err != nil || page == nil {
 		return nil, err
@@ -616,6 +648,10 @@ func appleGet(term string, width int) (*Page, error) {
 var wikiDrop = set("References", "External links", "Notes", "Citations", "Further reading", "Bibliography", "Sources")
 
 func wikipediaGet(term string, width int) (*Page, error) {
+	return mediawiki("en.wikipedia.org", term, width)
+}
+
+func mediawiki(host, term string, width int) (*Page, error) {
 	var found struct {
 		Query struct {
 			Search []struct {
@@ -623,13 +659,13 @@ func wikipediaGet(term string, width int) (*Page, error) {
 			} `json:"search"`
 		} `json:"query"`
 	}
-	ok, err := fetchJSON("https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=1&srsearch="+url.QueryEscape(term), req{ua: apiUA}, &found)
+	ok, err := fetchJSON("https://"+host+"/w/api.php?action=query&list=search&format=json&srlimit=1&srsearch="+url.QueryEscape(term), req{ua: apiUA}, &found)
 	if err != nil || !ok || len(found.Query.Search) == 0 {
 		return nil, err
 	}
 	title := found.Query.Search[0].Title
 	slug := url.PathEscape(strings.ReplaceAll(title, " ", "_"))
-	b, err := fetch("https://en.wikipedia.org/api/rest_v1/page/html/"+slug, req{ua: apiUA})
+	b, err := fetch("https://"+host+"/api/rest_v1/page/html/"+slug, req{ua: apiUA})
 	if err != nil || b == nil {
 		return nil, err
 	}
@@ -644,7 +680,7 @@ func wikipediaGet(term string, width int) (*Page, error) {
 			s.Remove()
 		}
 	})
-	u := "https://en.wikipedia.org/wiki/" + slug
+	u := "https://" + host + "/wiki/" + slug
 	return &Page{title, u, renderSel(body, u, width)}, nil
 }
 
@@ -689,6 +725,123 @@ func stackoverflowGet(term string, width int) (*Page, error) {
 		by += ", accepted"
 	}
 	return &Page{stdhtml.UnescapeString(q.Title), u, dim(by) + "\n\n" + renderHTML(a.Body, u, width)}, nil
+}
+
+const goRoot = "https://pkg.go.dev"
+
+var (
+	goStdLink  = regexp.MustCompile(`<a href="/([a-z0-9/]+)@go[0-9.]+"`)
+	goHit      = regexp.MustCompile(`<a href="([^"]+)"[^>]*data-test-id="snippet-title"`)
+	goExported = regexp.MustCompile(`^[a-z0-9/]+\.[A-Z]`)
+)
+
+func goStd() (map[string]string, error) {
+	b, err := fetch(goRoot+"/std", req{ttl: month})
+	if err != nil {
+		return nil, err
+	}
+	idx := map[string]string{}
+	for _, m := range goStdLink.FindAllSubmatch(b, -1) {
+		path := string(m[1])
+		name := path[strings.LastIndexByte(path, '/')+1:]
+		if old, seen := idx[name]; !seen || len(path) < len(old) || (len(path) == len(old) && path < old) {
+			idx[name] = path
+		}
+		idx[path] = path
+	}
+	return idx, nil
+}
+
+func goSearch(q, mode string) (string, error) {
+	b, err := fetch(goRoot+"/search?m="+mode+"&q="+url.QueryEscape(q), req{})
+	if err != nil || b == nil {
+		return "", err
+	}
+	m := goHit.FindSubmatch(b)
+	if m == nil {
+		return "", nil
+	}
+	return strings.TrimPrefix(string(m[1]), "/"), nil
+}
+
+func goResolve(term string) (pkg, sym string, err error) {
+	t := term
+	if !strings.Contains(t, "/") {
+		t = strings.ReplaceAll(t, " ", ".")
+	}
+	head, tail := "", t
+	if i := strings.LastIndexByte(t, '/'); i >= 0 {
+		head, tail = t[:i+1], t[i+1:]
+	}
+	if strings.Contains(head, ".") {
+		name, sym, _ := strings.Cut(tail, ".")
+		return head + name, sym, nil
+	}
+	name, sym, _ := strings.Cut(tail, ".")
+	std, err := goStd()
+	if err != nil {
+		return "", "", err
+	}
+	if path, ok := std[strings.ToLower(head+name)]; ok {
+		return path, sym, nil
+	}
+	if name != strings.ToLower(name) {
+		hit, err := goSearch(t, "symbol")
+		if err != nil || hit == "" {
+			return "", "", err
+		}
+		pkg, sym, _ = strings.Cut(hit, "#")
+		return pkg, sym, nil
+	}
+	if sym != "" {
+		return "", "", nil
+	}
+	hit, err := goSearch(name, "package")
+	if err != nil || !strings.Contains(strings.ToLower(hit), strings.ToLower(name)) {
+		return "", "", err
+	}
+	return hit, "", nil
+}
+
+func goGet(term string, width int) (*Page, error) {
+	pkg, sym, err := goResolve(term)
+	if err != nil || pkg == "" {
+		return nil, err
+	}
+	u := goRoot + "/" + pkg
+	b, err := fetch(u, req{})
+	if err != nil || b == nil {
+		return nil, err
+	}
+	doc, err := parseDoc(b)
+	if err != nil {
+		return nil, err
+	}
+	content := doc.Find(".Documentation-content").First()
+	content.Find(".Documentation-idLink, .Documentation-index, .Documentation-exampleButtonsContainer, .Documentation-examples, .Documentation-sinceVersion, a[title^='Go to']").Remove()
+	if sym != "" {
+		var target *goquery.Selection
+		content.Find("[id]").EachWithBreak(func(_ int, s *goquery.Selection) bool {
+			id, _ := s.Attr("id")
+			if strings.EqualFold(id, sym) {
+				target = s
+				return false
+			}
+			return true
+		})
+		if target != nil {
+			id, _ := target.Attr("id")
+			box := target.Closest("div.Documentation-typeMethod, div.Documentation-typeFunc, div.Documentation-function, div.Documentation-type")
+			if box.Length() > 0 {
+				return &Page{pkg + "." + id, u + "#" + id, renderSel(box, u, width)}, nil
+			}
+		}
+	}
+	body := renderSel(content, u, width)
+	if readme := renderSel(doc.Find(".UnitReadme-content").First(), u, width); readme != "" {
+		body = readme + "\n\n" + body
+	}
+	return &Page{pkg, u, body}, nil
 }
 
 func pkgName(term string) string { return strings.ReplaceAll(strings.ToLower(term), " ", "-") }
@@ -820,6 +973,7 @@ var sites = []*Site{
 	{ID: "cppreference", Name: "cppreference", Get: cppGet, Noise: noise("c++ c++11 c++14 c++17 c++20 c++23 c++26 cpp cppreference docs doc documentation reference ref stl page")},
 	{ID: "python", Name: "Python docs", Get: pythonGet, Noise: noise("python python3 py docs doc documentation reference stdlib standard library module")},
 	{ID: "rust", Name: "Rust std docs", Get: rustGet, Noise: noise("rust rustlang docs doc documentation reference std stdlib standard library macro")},
+	{ID: "go", Name: "pkg.go.dev", Get: goGet, Noise: noise("go golang docs doc documentation reference package pkg stdlib standard library")},
 	{ID: "mdn", Name: "MDN", Get: mdnGet, Noise: noise("mdn docs doc documentation reference javascript js")},
 	{ID: "apple", Name: "Apple Developer", Get: appleGet, Noise: noise("apple developer docs doc documentation reference swiftui swift uikit appkit foundation storekit ios macos")},
 	{ID: "wikipedia", Name: "Wikipedia", Get: wikipediaGet, Noise: noise("wikipedia wiki who what when where was is are were the")},
@@ -828,6 +982,6 @@ var sites = []*Site{
 	{ID: "pypi", Name: "PyPI", Get: pypiGet, Noise: pkgNoise},
 	{ID: "crates", Name: "crates.io", Get: cratesGet, Noise: pkgNoise},
 	{ID: "man", Name: "man", Get: manGet, Noise: noise("man manual manpage page flags flag options option for of the command")},
-	{ID: "weather", Name: "wttr.in", Get: weatherGet, EmptyOK: true, Noise: noise("weather forecast temperature in for at today tomorrow the will it rain")},
-	{ID: "notes", Name: "Notes", Get: notesGet, Noise: noise("my notes note vault in from on about")},
+	{ID: "weather", Name: "wttr.in", Get: weatherGet, EmptyOK: true, Explicit: true, Noise: noise("weather forecast temperature in for at today tomorrow the will it rain")},
+	{ID: "notes", Name: "Notes", Get: notesGet, Explicit: true, Noise: noise("my notes note vault in from on about")},
 }

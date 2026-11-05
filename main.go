@@ -85,6 +85,10 @@ func main() {
 		}
 	}
 
+	if strings.HasPrefix(found.URL, "https://docs.rs/") {
+		used = "docs.rs"
+	}
+
 	var b strings.Builder
 	if len(missed) > 0 {
 		b.WriteString(dim("not on "+strings.Join(missed, " or ")+", showing "+used) + "\n")

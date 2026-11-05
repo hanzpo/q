@@ -9,16 +9,16 @@ q Vec::push
 q how do i undo the last git commit
 ```
 
-Run `q --sites` for the list. Each site has its own parser in `sites.go`.
+Run `q --sites` for the list. Each site has its own parser in `sites.go` and `sites_more.go`. Sites that publish an `llms.txt` or sitemap share one parser.
 
 ## Routing
 
 1. A query you corrected before goes to the same site.
 2. Regex rules in `route.go`.
-3. Exact symbol matches against the Python and C++ indexes.
+3. Exact symbol matches against the Python, C++ and Go indexes.
 4. A small naive Bayes classifier trained on `examples.go` and your corrections. It runs locally in under a millisecond.
 
-If the first site has no page, `q` tries the next one and says so.
+If the first site has no page, `q` tries the next one and says so. A query that names a product, like `cloudflare` or `stripe`, stays on that site.
 
 ## Corrections
 

@@ -21,21 +21,52 @@ type rule struct {
 func r(pattern, site string) rule { return rule{regexp.MustCompile(pattern), site} }
 
 var rules = []rule{
+	r(`(?i)\b(my notes|my vault|notes (on|about))\b`, "notes"),
+	r(`(?i)\betymology\b|^origin of the word\b`, "etymology"),
+	r(`(?i)^[\d.,]*\s*(usd|cad|eur|gbp|jpy|cny|aud|chf|inr|krw|hkd|sgd|nzd|mxn|brl|sek|nok|dkk|php|thb)\s+(in|to)\s+(usd|cad|eur|gbp|jpy|cny|aud|chf|inr|krw|hkd|sgd|nzd|mxn|brl|sek|nok|dkk|php|thb)$`, "currency"),
+	r(`^\d+(\s*,\s*\d+){2,}$|(?i)\boeis\b`, "oeis"),
+	r(`(?i)^rfc[\s-]*\d+$`, "rfc"),
+	r(`(?i)\b(can ?i ?use|browser support)\b`, "caniuse"),
+	r(`(?i)\b(urban ?dictionary|slang)\b`, "urban"),
+	r(`(?i)\b(hn|hacker ?news)\b`, "hackernews"),
+	r(`(?i)\barxiv\b|\bpapers? (on|about)\b`, "arxiv"),
+	r(`(?i)\bquotes?\b|\bwikiquote\b`, "quotes"),
+	r(`(?i)^(books?|openlibrary)\s|\sbook$`, "books"),
+	r(`(?i)^(tldr)\s|\s(examples?|cheatsheet)$|^examples? (of|for)\s`, "tldr"),
+	r(`(?i)^(github|gh|repo)\s+\S+/\S+$|^https?://github\.com/`, "github"),
+	r(`^[\w-]+\.[a-z]+/\S+`, "go"),
+	r(`(?i)^git[ -][a-z-]+( docs?)?$`, "git"),
+	r(`(?i)^(brew|homebrew)\s`, "brew"),
+	r(`(?i)\bdocker (hub|image)\b`, "docker"),
+	r(`(?i)\barch ?(linux|wiki)\b`, "archwiki"),
+	r(`(?i)\b(postgres|postgresql|psql)\b`, "postgres"),
+	r(`(?i)\bsqlite3?\b`, "sqlite"),
+	r(`(?i)\blua\b`, "lua"),
+	r(`(?i)\bdocs\.rs\b`, "docsrs"),
+	r(`(?i)\b(cloudflare|wrangler|durable objects?)\b`, "cloudflare"),
+	r(`(?i)\b(claude|anthropic)\b`, "claude"),
+	r(`(?i)\bstripe\b`, "stripe"),
+	r(`(?i)\bsupabase\b`, "supabase"),
+	r(`(?i)\bbun\b`, "bun"),
+	r(`(?i)\bexpo\b`, "expo"),
+	r(`(?i)\bnext\.?js\b`, "nextjs"),
+	r(`(?i)\bnode(\.?js)?\b|^(fs|child_process|worker_threads|readline)\.\w+`, "node"),
+	r(`(?i)\breact\b|^use[A-Z]\w+$`, "react"),
 	r(`(?i)\b(synonyms?|antonyms?|thesaurus|another word|other words?|opposite of|words? like|ways to say)\b`, "thesaurus"),
-	r(`(?i)^(define|definition of|meaning of|etymology of)\b|\bwhat does \S+ mean\b|\bmeaning$`, "dictionary"),
+	r(`(?i)^(define|definition of|meaning of)\b|\bwhat does \S+ mean\b|\bmeaning$`, "dictionary"),
 	r(`(?i)^(man|manual for)\s|\bman ?page\b`, "man"),
 	r(`(?i)\b(weather|forecast)\b`, "weather"),
-	r(`(?i)\b(my notes|my vault|notes (on|about))\b`, "notes"),
 	r(`\bstd::(collections|fs|io|sync|vec|env|net|rc|cell)\b`, "rust"),
 	r(`(?i)\bcppreference\b|(^|\s)(c\+\+\d*|cpp)(\s|$)|\bstd::\w+`, "cppreference"),
 	r(`^\w+::\w+`, "rust"),
-	r(`(?i)\bmdn\b`, "mdn"),
+	r(`(?i)\bmdn\b|^(css|html|javascript|js)\s`, "mdn"),
 	r(`^(Array|Object|Promise|String|Number|Math|JSON|Map|Set|Date|Intl|Reflect)\.\w+`, "mdn"),
 	r(`(?i)\b(pypi|pip install)\b`, "pypi"),
 	r(`(?i)\b(npm|npx)\b`, "npm"),
 	r(`(?i)\b(crates?(\.io)?|cargo add)\b`, "crates"),
 	r(`(?i)\bstack ?overflow\b|^(how (do|can|to|should)|why (is|does|do|am|won't|can't))\b`, "stackoverflow"),
 	r(`(?i)\bwikipedia\b|^(who|when|where|what (is|was|are))\b`, "wikipedia"),
+	r(`(?i)\bgolang\b|\bpkg\.go\.dev\b|^go\s+\S`, "go"),
 	r(`\b[Ss]wiftUI\b|\bswiftui\b|\bapple docs\b|^(UI|NS|HK|SK|URL)[A-Z]?\w+$`, "apple"),
 }
 
@@ -177,9 +208,21 @@ func symbolSite(query string) string {
 	if strings.ContainsAny(query, " \t") {
 		return ""
 	}
+	if strings.Count(query, "/") == 1 {
+		if idx, err := goStd(); err == nil && idx[query] != "" {
+			return "go"
+		}
+		return "github"
+	}
 	if strings.Contains(query, ".") {
 		if idx, err := pyIndex(); err == nil && idx[query] != "" {
 			return "python"
+		}
+		if goExported.MatchString(query) {
+			pkg, _, _ := strings.Cut(query, ".")
+			if idx, err := goStd(); err == nil && idx[pkg] != "" {
+				return "go"
+			}
 		}
 	}
 	if strings.Contains(query, "_") {
@@ -214,9 +257,12 @@ func routeWith(query string, extra []example) []string {
 	if first != "" {
 		order = promote(first, order)
 	}
+	if siteByID(order[0]).Explicit {
+		return order[:1]
+	}
 	picked := order[:1]
 	for _, l := range order[1:] {
-		if len(picked) < 2 && l != "weather" && l != "notes" && l != "wikipedia" {
+		if len(picked) < 2 && l != "wikipedia" && !siteByID(l).Explicit {
 			picked = append(picked, l)
 		}
 	}

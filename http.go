@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -19,11 +20,12 @@ const (
 	month     = 30 * day
 )
 
-var client = &http.Client{Timeout: 20 * time.Second}
+var client = &http.Client{}
 
 type req struct {
-	ttl time.Duration
-	ua  string
+	ttl     time.Duration
+	ua      string
+	timeout time.Duration
 }
 
 func cacheDir() string {
@@ -52,7 +54,12 @@ func fetch(url string, o req) ([]byte, error) {
 	if st, err := os.Stat(path); err == nil && time.Since(st.ModTime()) < o.ttl {
 		return os.ReadFile(path)
 	}
-	r, err := http.NewRequest("GET", url, nil)
+	if o.timeout == 0 {
+		o.timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	r, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
