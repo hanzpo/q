@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -204,6 +206,7 @@ func cppIndex(page string) (map[string]string, error) {
 
 var (
 	templateArgs  = regexp.MustCompile(`<[^<>]*>`)
+	cppCtorWords  = regexp.MustCompile(`(?i)^(init|initiali[sz]e|construct|constructor|create|declare)$`)
 	cppNamespaces = set("chrono", "filesystem", "ranges", "views")
 	cppOperators  = map[string]string{"operator[]": "operator_at", "operator==": "operator_cmp", "operator<<": "operator_ltlt", "operator>>": "operator_gtgt"}
 )
@@ -243,6 +246,7 @@ func cppGet(term string, width int) (*Page, error) {
 		return nil, nil
 	}
 	var known, tries []string
+	var tail string
 	if len(parts) > 1 && cppNamespaces[parts[0]] {
 		sub, err := cppIndex("/" + parts[0])
 		if err != nil {
@@ -258,6 +262,17 @@ func cppGet(term string, width int) (*Page, error) {
 	}
 	if root, ok := idx[parts[0]]; ok {
 		known = append(known, strings.Join(append([]string{root}, parts[1:]...), "/"))
+		tail = root
+	} else {
+		for i, p := range parts[1:] {
+			if root, ok := idx[p]; ok {
+				if slices.ContainsFunc(parts[:i+1], cppCtorWords.MatchString) {
+					known = append(known, root+"/"+path.Base(root))
+				}
+				known = append(known, root)
+				break
+			}
+		}
 	}
 	for _, u := range known {
 		b, err := fetch(u, req{})
@@ -273,6 +288,9 @@ func cppGet(term string, width int) (*Page, error) {
 		tries = append(tries, cppRoot+"/language/"+name, cppRoot+"/keyword/"+name)
 	}
 	tries = unique(append(tries, cppRoot+"/"+parts[0]))
+	if tail != "" {
+		tries = append(tries, tail)
+	}
 	for i, b := range fetchAll(tries, req{}) {
 		if p, err := cppPage(b, tries[i], width); p != nil || err != nil {
 			return p, err

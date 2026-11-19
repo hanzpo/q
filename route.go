@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const learnedWeight = 8
@@ -277,6 +278,41 @@ func symbolSite(query string) string {
 }
 
 var (
+	englishOnce sync.Once
+	english     map[string]bool
+	cppNotWords = set("async", "includes", "uppercase", "iterator", "mutex", "regex", "midpoint", "projected", "formatter", "formattable", "quoted", "mega", "milli", "centi", "deci", "deca", "hecto", "peta", "yotta", "zepto", "femto", "quetta", "ronto", "dims", "extents", "swappable", "incrementable", "mergeable")
+	otherLang   = regexp.MustCompile(`(?i)\b(python|py|rust|go|golang|java|javascript|js|typescript|ts|swift|node|ruby|php|kotlin|c#|lua|bash|zsh|sql|postgres|sqlite)\b`)
+)
+
+func englishWord(w string) bool {
+	englishOnce.Do(func() {
+		english = map[string]bool{}
+		b, _ := os.ReadFile("/usr/share/dict/words")
+		for _, l := range strings.Split(string(b), "\n") {
+			english[strings.ToLower(l)] = true
+		}
+	})
+	return english[w]
+}
+
+func cppWord(query string) string {
+	if otherLang.MatchString(query) {
+		return ""
+	}
+	idx, err := cppIndex("")
+	if err != nil {
+		return ""
+	}
+	for _, w := range strings.Fields(query) {
+		w = strings.TrimPrefix(w, "std::")
+		if len(w) >= 4 && idx[w] != "" && !cppNotWords[w] && !englishWord(strings.ToLower(w)) {
+			return w
+		}
+	}
+	return ""
+}
+
+var (
 	goWord  = regexp.MustCompile(`(?i)^go\s+([\w/]+)`)
 	manWord = regexp.MustCompile(`(?i)^man\s+(?:\d\s+)?(\S+)$`)
 )
@@ -311,6 +347,9 @@ func routeWith(query string, extra []example) []string {
 		if ru.re.MatchString(query) && (ru.not == nil || !ru.not.MatchString(query)) {
 			hits = append(hits, ru)
 		}
+	}
+	if (len(hits) == 0 || hits[0].site == "wikipedia") && cppWord(query) != "" {
+		return []string{"cppreference"}
 	}
 	if len(hits) > 0 {
 		head := hits[0]

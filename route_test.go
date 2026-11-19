@@ -75,6 +75,13 @@ func realSites(got []string) []string {
 
 func TestHeldOut(t *testing.T) { score(t, heldOut) }
 
+var cppWords = []example{
+	{"initialize istringstream", "cppreference"}, {"istringstream", "cppreference"}, {"ifstream open", "cppreference"}, {"cout precision", "cppreference"},
+	{"what is stringstream", "cppreference"}, {"python deque", "python"}, {"rust iterator docs", "rust"},
+}
+
+func TestCppWords(t *testing.T) { score(t, cppWords) }
+
 func score(t *testing.T, set []example) {
 	right := 0
 	for _, e := range set {
